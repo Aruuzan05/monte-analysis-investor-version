@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# SECRETS — never commit these.
+# On Streamlit Community Cloud the app password goes in the app dashboard
+# (Manage app -> Settings -> Secrets), NOT in a file in the repo.
+# ---------------------------------------------------------------------------
+.streamlit/secrets.toml
+*.env
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+pyvenv.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---------------------------------------------------------------------------
+# Python bytecode / build artifacts
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---------------------------------------------------------------------------
+# Test / tooling caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Editors and OS cruft
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Local outputs
+# ---------------------------------------------------------------------------
+keepp_monte_carlo.csv
+*.log

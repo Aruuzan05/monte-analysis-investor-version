@@ -1,0 +1,30 @@
+# Bring the app up with:  docker compose up -d
+# Update after a code change:  docker compose up -d --build
+services:
+  keepp-mc:
+    build:
+      context: .
+      args:
+        # Override these two when building from OUTSIDE mainland China:
+        #   BASE: python:3.12-slim
+        #   PIP_INDEX: https://pypi.org/simple
+        BASE: registry.cn-hangzhou.aliyuncs.com/library/python:3.12-slim
+        PIP_INDEX: https://mirrors.aliyun.com/pypi/simple/
+        PIP_HOST: mirrors.aliyun.com
+    image: keepp-mc:latest
+    container_name: keepp-mc
+    restart: unless-stopped
+    ports:
+      # Host 8501 -> container 8501. Open 8501 in your cloud security group.
+      - "8501:8501"
+    volumes:
+      # Password file, kept out of the image so it never lands in a registry.
+      # Comment this out to run without a password.
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    # A 10k-path run is ~200ms and a few hundred MB; this is headroom for
+    # three managers running 50k-path simulations at once.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G

@@ -1,0 +1,36 @@
+# Keepp Capital — Monte Carlo simulator
+#
+# This file IS committed. Only secrets.toml is gitignored.
+#
+# Streamlit Community Cloud manages the server address, port and headless mode
+# itself, so those keys are deliberately absent — setting them here does
+# nothing on Cloud and only causes confusion when self-hosting later.
+
+[browser]
+# Streamlit posts usage stats to a Segment endpoint. Off for privacy, and
+# because that host is unreachable from mainland China, where the failed
+# request delays first paint.
+gatherUsageStats = false
+
+[server]
+# Left at the default (true). Setting enableCORS = false makes Streamlit send
+# 'Access-Control-Allow-Origin: *' and accept a WebSocket connection from ANY
+# origin — XSRF protection does not stop that, because opening a WebSocket
+# needs no XSRF token. Do not turn it off on a public URL.
+enableXsrfProtection = true
+maxUploadSize = 20
+
+[theme]
+base = "light"
+primaryColor = "#00877A"
+backgroundColor = "#FCFDFD"
+secondaryBackgroundColor = "#F1F4F4"
+textColor = "#0F1719"
+# Keep this on a built-in ("sans serif" / "serif" / "monospace"). Naming a
+# Google Font makes the browser fetch fonts.googleapis.com, which is blocked
+# in mainland China.
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
