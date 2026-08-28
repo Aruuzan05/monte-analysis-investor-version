@@ -1,9 +1,18 @@
 # Keepp Capital — Monte Carlo Allocation Simulator
 
-A Streamlit app for the target-allocation Monte Carlo. Users edit weights,
-expected returns and volatilities; the app returns the 3y/5y/10y percentile
-table and a wealth fan chart. J.P. Morgan 2026 LTCMA figures are the hardcoded
-defaults.
+A Streamlit app for the target-allocation Monte Carlo. It runs in two modes:
+
+- **Base · JPM 2026 LTCMA** — every input locked to the figures behind the
+  July 2027 deck. This is the read-only reference case.
+- **Custom** — weights, expected returns, volatilities and the full correlation
+  matrix are all editable.
+
+Either way the app returns the 3y/5y/10y percentile table and a wealth fan
+chart. Switching between modes keeps both sets of inputs: Base always shows the
+JPM figures, and Custom remembers your edits.
+
+Six asset classes: Fixed Income, Public Equities, Private Equity & VC,
+Diversified Hedge Funds, Commodities & Real Assets, Cash.
 
 Built to run on a mainland-China host and load without a VPN.
 
@@ -194,7 +203,7 @@ security-group rule limiting inbound 8501 to your office range.
 |---|---|
 | `app.py` | Streamlit UI. No network calls — see the header comment. |
 | `engine.py` | The simulation. Pure numpy, no Streamlit import, unit-testable. |
-| `test_engine.py` | Reconciles output against the Excel workbook. |
+| `test_engine.py` | Reconciles Base against the workbook; also exercises a funded hedge fund sleeve and the non-PSD repair path. |
 | `requirements.txt` | Pinned. Verified to resolve and reproduce the workbook. |
 | `Dockerfile` | Mirrors are build args, so it works inside and outside China. |
 | `docker-compose.yml` | One-command deploy. |
@@ -210,6 +219,35 @@ python test_engine.py
 
 ---
 
+## Base assumptions
+
+| Asset class | Weight | Return | Vol |
+|---|---|---|---|
+| Fixed Income | 45% | 5.00% | 7.02% |
+| Public Equities & Mutual Funds | 20% | 12.88% | 14.47% |
+| Private Equity & Venture Capital | 10% | 11.90% | 19.80% |
+| Diversified Hedge Funds | 0% | 5.30% | 6.50%* |
+| Commodities & Real Assets | 8% | 6.10% | 18.30% |
+| Cash & Equivalents | 17% | 3.80% | 0.67% |
+
+**Hedge funds carry a 0% base weight on purpose.** The deck's target allocation
+has no hedge fund sleeve, so a zero weight keeps the Base case numerically
+identical to the signed-off workbook. Allocate to it in Custom mode.
+
+**\* The 6.5% hedge fund volatility is an estimate, not a J.P. Morgan figure.**
+J.P. Morgan publishes the diversified hedge fund *return* (5.3%, leveraged and
+net of fees) in its public 2026 LTCMA materials, but the matching volatility
+sits only in the institutional assumptions matrix. 6.5% is in line with the
+realised volatility of a broad hedge fund composite. The hedge fund correlation
+row (EQ 0.75, PE 0.65, FI 0.35, CMD 0.35) is likewise LTCMA-style convention,
+not a published J.P. Morgan matrix. Both are flagged in the app's sources panel
+and are editable in Custom mode — replace them if you hold better numbers.
+
+The 6x6 correlation matrix is verified positive semi-definite (minimum
+eigenvalue 0.067), so it factorises without repair.
+
+---
+
 ## Method
 
 Ported 1:1 from `Keepp_Capital_Target_Allocation_Monte_Carlo.xlsx`:
@@ -220,14 +258,15 @@ Ported 1:1 from `Keepp_Capital_Target_Allocation_Monte_Carlo.xlsx`:
 - Portfolio return `Σ w_i·r_i` each month — rebalanced to target weights monthly.
 - Reproduces the workbook's analytic identity `arith ≈ geom + σ²/2`.
 
-Reconciliation against the workbook, Base scenario, 10,000 paths:
+Reconciliation against the workbook, Base mode, 10,000 paths. Because hedge
+funds sit at 0% in Base, adding the sixth asset class leaves these unchanged:
 
 | Metric | App | Workbook |
 |---|---|---|
 | Analytic expected return | 7.80% | 7.80% |
 | Analytic volatility | 7.40% | 7.40% |
-| 10y median annualized | 7.50% | 7.52% |
-| 10y median wealth | 2.060× | 2.064× |
+| 10y median annualized | 7.49% | 7.52% |
+| 10y median wealth | 2.059× | 2.064× |
 | 10y P(loss) | 0.09% | 0.09% |
 
 Differences are Monte Carlo sampling noise. The seed is fixed (default

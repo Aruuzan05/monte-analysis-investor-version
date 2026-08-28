@@ -28,7 +28,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-INK = "#0F1719"
 INK_3 = "#6C7C7D"
 ACCENT = "#00877A"
 BAND_OUTER = "#D3E9E5"
@@ -48,26 +47,7 @@ st.markdown(f"""
   html, body, [class*="css"], .stApp {{ font-family: {SANS}; }}
   .block-container {{ padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1500px; }}
 
-  /* numbers read as data, not prose */
-  [data-testid="stMetricValue"] {{
-      font-family: {MONO}; font-size: 1.85rem; font-weight: 500;
-      letter-spacing: -.02em; font-variant-numeric: tabular-nums;
-  }}
-  [data-testid="stMetricLabel"] p {{
-      font-family: {MONO}; font-size: .68rem; letter-spacing: .1em;
-      text-transform: uppercase; color: {INK_3};
-  }}
-  [data-testid="stMetricDelta"] {{ font-size: .75rem; }}
-  [data-testid="stMetric"] {{
-      background: var(--secondary-background-color);
-      border: 1px solid {GRID}; border-radius: 6px; padding: 14px 16px;
-  }}
   div[data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
-
-  h1 {{ font-size: 1.85rem; font-weight: 600; letter-spacing: -.015em; margin-bottom: .1rem; }}
-  h2 {{ font-size: 1.12rem; font-weight: 600; letter-spacing: -.005em;
-        margin-top: 1.9rem; margin-bottom: .5rem; }}
-  h3 {{ font-size: .95rem; font-weight: 600; }}
 
   .eyebrow {{ font-family: {MONO}; font-size: .68rem; letter-spacing: .14em;
              text-transform: uppercase; color: {ACCENT}; margin-bottom: .35rem; }}
@@ -89,6 +69,13 @@ st.markdown(f"""
   .statv.hot {{ color: {BRICK}; }}
   .statn {{ font-size: .72rem; color: {INK_3}; margin-top: 7px; }}
 
+  /* Mode chip shown next to the page title. */
+  .modechip {{ display: inline-block; font-family: {MONO}; font-size: .66rem;
+              letter-spacing: .1em; text-transform: uppercase; padding: 3px 8px;
+              border-radius: 4px; vertical-align: middle; margin-left: 10px; }}
+  .modechip.base {{ background: {BAND_OUTER}; color: #00655B; }}
+  .modechip.custom {{ background: #F3E7DF; color: {BRICK}; }}
+
   /* Streamlit's own heading classes outrank a bare h1/h2 selector. */
   .stMarkdown h1 {{ font-size: 1.9rem !important; }}
   .stMarkdown h2 {{ font-size: 1.15rem !important; margin-top: 2rem !important; }}
@@ -96,12 +83,17 @@ st.markdown(f"""
   section[data-testid="stSidebar"] {{ width: 452px !important; }}
   section[data-testid="stSidebar"] .block-container {{ padding-top: 1.4rem; }}
   hr {{ margin: .9rem 0; }}
+
+  @media (max-width: 430px) {{
+    .statv {{ font-size: 1.45rem; }}
+  }}
 </style>
 """, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
-# Optional password gate (set app_password in .streamlit/secrets.toml)
+# Optional password gate (set app_password in .streamlit/secrets.toml, or in
+# Streamlit Community Cloud under Manage app -> Settings -> Secrets)
 # --------------------------------------------------------------------------
 def password_ok() -> bool:
     # st.secrets raises if no secrets.toml exists at all, so treat "no secrets
@@ -132,58 +124,92 @@ if not password_ok():
 
 
 # --------------------------------------------------------------------------
-# Hardcoded J.P. Morgan 2026 LTCMA defaults
+# Base case — J.P. Morgan 2026 LTCMA (hardcoded, never edited in Base mode)
+#
+# Diversified Hedge Funds carries a 0% base weight on purpose: the July 2027
+# deck's target allocation has no hedge fund sleeve, so a zero weight keeps the
+# Base case numerically identical to the signed-off Excel workbook. Allocate to
+# it in Custom mode.
 # --------------------------------------------------------------------------
 ASSETS = ["Fixed Income", "Public Equities & Mutual Funds",
-          "Private Equity & Venture Capital", "Commodities & Real Assets",
-          "Cash & Equivalents"]
-TAGS = ["FI", "EQ", "PE", "CMD", "CASH"]
-# The sidebar is 400px wide; the full names below clip the numeric columns, so
+          "Private Equity & Venture Capital", "Diversified Hedge Funds",
+          "Commodities & Real Assets", "Cash & Equivalents"]
+TAGS = ["FI", "EQ", "PE", "HF", "CMD", "CASH"]
+# The sidebar is 452px wide; the full names above clip the numeric columns, so
 # the editor shows these and the sources section carries the full names.
-SHORT = ["Fixed Income", "Public Equities", "Private Equity", "Commodities", "Cash"]
-DEF_W = [45.0, 20.0, 10.0, 8.0, 17.0]
-DEF_R = [5.00, 12.88, 11.90, 6.10, 3.80]
-DEF_V = [7.02, 14.47, 19.80, 18.30, 0.67]
-DEF_CORR = [[1.00, 0.68, 0.30, 0.10, 0.00],
-            [0.68, 1.00, 0.80, 0.30, 0.00],
-            [0.30, 0.80, 1.00, 0.25, 0.00],
-            [0.10, 0.30, 0.25, 1.00, 0.00],
-            [0.00, 0.00, 0.00, 0.00, 1.00]]
-EQ_BASE, EQ_CONS = 12.88, 7.00
-EQ_IDX = 1
+SHORT = ["Fixed Income", "Public Equities", "Private Equity",
+         "Hedge Funds", "Commodities", "Cash"]
+
+DEF_W = [45.0, 20.0, 10.0, 0.0, 8.0, 17.0]
+DEF_R = [5.00, 12.88, 11.90, 5.30, 6.10, 3.80]
+DEF_V = [7.02, 14.47, 19.80, 6.50, 18.30, 0.67]
+
+# Order: FI, EQ, PE, HF, CMD, CASH. Verified positive semi-definite
+# (min eigenvalue 0.067), so it factorises without repair.
+DEF_CORR = [
+    [1.00, 0.68, 0.30, 0.35, 0.10, 0.00],
+    [0.68, 1.00, 0.80, 0.75, 0.30, 0.00],
+    [0.30, 0.80, 1.00, 0.65, 0.25, 0.00],
+    [0.35, 0.75, 0.65, 1.00, 0.35, 0.00],
+    [0.10, 0.30, 0.25, 0.35, 1.00, 0.00],
+    [0.00, 0.00, 0.00, 0.00, 0.00, 1.00],
+]
+N = len(ASSETS)
+
+MODE_BASE = "Base · JPM 2026 LTCMA"
+MODE_CUSTOM = "Custom"
 
 SOURCES = [
     ("Fixed Income", "5.00% · 7.02%",
      "Return: index YTM of global IG corporates — iShares Global Corp Bond UCITS trailing "
      "distribution yield 4.26% plus pull-to-par, cross-checked against JPM 2026 LTCMA US IG "
      "at 5.2%. Volatility: regime anchor √(25%·3.3%² + 50%·6.1%² + 25%·10.6%²) = 7.02%."),
-    ("Public Equities & Mutual Funds", "12.88% · 14.47%",
+    ("Public Equities &amp; Mutual Funds", "12.88% · 14.47%",
      "Return: MSCI World 10-year annualized total return (iShares MSCI World ETF URTH, "
      "adjusted close, Jul-2016 to Jul-2026). Volatility: regime anchor "
-     "√(25%·5.1%² + 50%·13.9%² + 25%·20.6%²) = 14.47%. The Conservative scenario "
-     "substitutes the JPM 7.0% forward return."),
-    ("Private Equity & Venture Capital", "11.90% · 19.80%",
+     "√(25%·5.1%² + 50%·13.9%² + 25%·20.6%²) = 14.47%."),
+    ("Private Equity &amp; Venture Capital", "11.90% · 19.80%",
      "J.P. Morgan 2026 Long-Term Capital Market Assumptions, Private Equity (USD)."),
-    ("Commodities & Real Assets", "6.10% · 18.30%",
+    ("Diversified Hedge Funds", "5.30% · 6.50%",
+     "<b>Return:</b> J.P. Morgan 2026 LTCMA, diversified hedge funds (USD), 5.3% — "
+     "leveraged and net of fees. <b>Volatility: 6.5% is an estimate, not a JPM figure.</b> "
+     "J.P. Morgan publishes the hedge fund return in its public 2026 materials but not the "
+     "matching volatility, which sits in the institutional-only assumptions matrix. 6.5% is "
+     "in line with the realised volatility of a broad hedge fund composite. Treat it as a "
+     "placeholder and override it in Custom mode if you hold a better number. "
+     "Base weight is 0% because the target allocation has no hedge fund sleeve."),
+    ("Commodities &amp; Real Assets", "6.10% · 18.30%",
      "J.P. Morgan 2026 LTCMA, broad commodities basket (USD)."),
-    ("Cash & Equivalents", "3.80% · 0.67%",
+    ("Cash &amp; Equivalents", "3.80% · 0.67%",
      "Return: current USD risk-free rate, 3-month T-bill at 3.80% (15-Jul-2026). "
      "Volatility: JPM 2026 LTCMA US Cash. Includes the 2% digital-assets sleeve, "
      "folded into cash per instruction."),
+    ("Correlations", "Convention",
+     "EQ–FI 0.68 is the 10-year monthly correlation. PE–EQ 0.80 follows the J.P. Morgan "
+     "de-smoothed convention. The hedge fund row (EQ 0.75, PE 0.65, FI 0.35, CMD 0.35) is "
+     "LTCMA-style convention reflecting the equity beta embedded in a diversified hedge "
+     "fund composite — <b>not</b> a published J.P. Morgan matrix. Editable in Custom mode."),
     ("Method", "Regime-based vol",
      "Returns are entered as geometric per annum and simulated as correlated lognormal "
      "monthly draws, with the portfolio rebalanced to target weights every month. Vol "
      "anchors come from 120 months of returns split into calm / normal / stress regimes by "
      "the bottom quartile, middle 50% and top quartile of 6-month rolling MSCI World "
-     "volatility, weighted 25 / 50 / 25. Regimes are classified on equity volatility and "
-     "applied to both assets, so the bond stress figure reflects equity-stress periods "
-     "such as 2020 and 2022."),
+     "volatility, weighted 25 / 50 / 25."),
 ]
 
 
 # --------------------------------------------------------------------------
 # Session state
 # --------------------------------------------------------------------------
+def base_alloc() -> pd.DataFrame:
+    return pd.DataFrame({"Asset class": SHORT, "Weight %": DEF_W,
+                         "Return %": DEF_R, "Vol %": DEF_V})
+
+
+def base_corr() -> pd.DataFrame:
+    return pd.DataFrame(DEF_CORR, index=TAGS, columns=TAGS)
+
+
 def bump_editors():
     """Force the data_editors to remount.
 
@@ -197,17 +223,13 @@ def bump_editors():
     st.session_state.editor_nonce = st.session_state.get("editor_nonce", 0) + 1
 
 
-def reset_state():
-    bump_editors()
-    st.session_state.alloc = pd.DataFrame(
-        {"Asset class": SHORT, "Weight %": DEF_W,
-         "Return %": DEF_R, "Vol %": DEF_V})
-    st.session_state.corr = pd.DataFrame(DEF_CORR, index=TAGS, columns=TAGS)
-
-
-if "alloc" not in st.session_state:
+if "custom_alloc" not in st.session_state:
     st.session_state.editor_nonce = 0
-    reset_state()
+    # Custom starts as a copy of the base case, so switching modes is a
+    # starting point rather than a blank slate.
+    st.session_state.custom_alloc = base_alloc()
+    st.session_state.custom_corr = base_corr()
+    st.session_state.mode = MODE_BASE
 
 NONCE = st.session_state.get("editor_nonce", 0)
 
@@ -225,38 +247,50 @@ with st.sidebar:
     st.markdown('<div class="eyebrow">Keepp Capital</div>', unsafe_allow_html=True)
     st.markdown("### Assumptions")
 
-    c1, c2 = st.columns(2)
-    if c1.button("Base · 12.88%", width='stretch',
-                 help="MSCI World 10-year historical equity return"):
-        st.session_state.alloc.loc[EQ_IDX, "Return %"] = EQ_BASE
-        bump_editors()
-        st.rerun()
-    if c2.button("Conservative · 7.0%", width='stretch',
-                 help="J.P. Morgan forward-looking equity return"):
-        st.session_state.alloc.loc[EQ_IDX, "Return %"] = EQ_CONS
-        bump_editors()
-        st.rerun()
-
-    alloc = st.data_editor(
-        st.session_state.alloc,
-        key=f"alloc_editor_{NONCE}",
-        hide_index=True,
-        width='stretch',
-        num_rows="fixed",
-        column_config={
-            # step MUST stay 0.01: a coarser step makes the editor snap the
-            # *displayed* value to it, so 12.88 renders as 12.80 and a single
-            # click on the cell would commit the wrong number.
-            "Asset class": st.column_config.TextColumn(disabled=True, width="small"),
-            "Weight %": st.column_config.NumberColumn(
-                min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
-            "Return %": st.column_config.NumberColumn(
-                min_value=-20.0, max_value=60.0, step=0.01, format="%.2f"),
-            "Vol %": st.column_config.NumberColumn(
-                min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
-        },
+    mode = st.radio(
+        "Assumption set", [MODE_BASE, MODE_CUSTOM],
+        key="mode", label_visibility="collapsed",
+        horizontal=True,
+        captions=["Locked to the deck", "Edit everything"],
     )
-    st.session_state.alloc = alloc
+    is_base = mode == MODE_BASE
+
+    if is_base:
+        alloc = base_alloc()
+        corr_df = base_corr()
+        st.dataframe(
+            alloc, hide_index=True, width='stretch',
+            column_config={
+                "Asset class": st.column_config.TextColumn(width="small"),
+                "Weight %": st.column_config.NumberColumn(format="%.2f"),
+                "Return %": st.column_config.NumberColumn(format="%.2f"),
+                "Vol %": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        st.caption("Locked to the J.P. Morgan 2026 LTCMA figures behind the "
+                   "July 2027 deck. Switch to **Custom** to change any of them.")
+    else:
+        alloc = st.data_editor(
+            st.session_state.custom_alloc,
+            key=f"alloc_editor_{NONCE}",
+            hide_index=True,
+            width='stretch',
+            num_rows="fixed",
+            column_config={
+                # step MUST stay 0.01: a coarser step makes the editor snap the
+                # *displayed* value to it, so 12.88 renders as 12.80 and a single
+                # click on the cell would commit the wrong number.
+                "Asset class": st.column_config.TextColumn(disabled=True, width="small"),
+                "Weight %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
+                "Return %": st.column_config.NumberColumn(
+                    min_value=-20.0, max_value=60.0, step=0.01, format="%.2f"),
+                "Vol %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
+            },
+        )
+        st.session_state.custom_alloc = alloc
+        corr_df = st.session_state.custom_corr
 
     wsum = float(alloc["Weight %"].sum())
     off = abs(wsum - 100.0) > 0.005
@@ -267,8 +301,8 @@ with st.sidebar:
         unsafe_allow_html=True)
     if off and rc.button("Normalize", width='stretch'):
         if wsum > 0:
-            st.session_state.alloc["Weight %"] = (
-                st.session_state.alloc["Weight %"] / wsum * 100).round(4)
+            st.session_state.custom_alloc["Weight %"] = (
+                st.session_state.custom_alloc["Weight %"] / wsum * 100).round(4)
             bump_editors()
             st.rerun()
         else:
@@ -283,32 +317,47 @@ with st.sidebar:
                                help="Fix the seed so everyone running the same "
                                     "inputs sees the same numbers.")
         st.caption("Correlation matrix")
-        corr_edit = st.data_editor(
-            st.session_state.corr, key=f"corr_editor_{NONCE}", width='stretch',
-            column_config={t: st.column_config.NumberColumn(
-                min_value=-1.0, max_value=1.0, step=0.01, format="%.2f") for t in TAGS},
-        )
-        st.session_state.corr = corr_edit
-        st.caption("Edits are mirrored across the diagonal before the run. "
-                   "EQ–FI 0.68 is the 10-year monthly correlation; PE–EQ 0.80 "
-                   "follows the J.P. Morgan de-smoothed convention.")
+        if is_base:
+            st.dataframe(
+                corr_df, width='stretch',
+                column_config={t: st.column_config.NumberColumn(format="%.2f")
+                               for t in TAGS},
+            )
+            st.caption("Switch to **Custom** to edit correlations.")
+        else:
+            corr_df = st.data_editor(
+                st.session_state.custom_corr, key=f"corr_editor_{NONCE}",
+                width='stretch',
+                column_config={t: st.column_config.NumberColumn(
+                    min_value=-1.0, max_value=1.0, step=0.01, format="%.2f")
+                    for t in TAGS},
+            )
+            st.session_state.custom_corr = corr_df
+            st.caption("Edits are mirrored across the diagonal before the run. "
+                       "An internally inconsistent matrix is repaired to the "
+                       "nearest valid one, with a warning.")
 
     st.divider()
-    if st.button("Reset to JPM LTCMA defaults", width='stretch'):
-        reset_state()
+    if not is_base and st.button("Reset Custom to JPM defaults", width='stretch'):
+        st.session_state.custom_alloc = base_alloc()
+        st.session_state.custom_corr = base_corr()
+        bump_editors()
         st.rerun()
 
 
 # --------------------------------------------------------------------------
 # Header
 # --------------------------------------------------------------------------
+chip = ('<span class="modechip base">Base · JPM LTCMA</span>' if is_base
+        else '<span class="modechip custom">Custom assumptions</span>')
 st.markdown('<div class="eyebrow">Keepp Capital · Target Allocation</div>',
             unsafe_allow_html=True)
-st.markdown("# Monte Carlo Allocation Simulator")
+st.markdown(f"# Monte Carlo Allocation Simulator{chip}", unsafe_allow_html=True)
 st.markdown(
     '<p class="sub">Correlated lognormal paths, monthly steps, rebalanced to target '
-    'weights each month. Defaults are the J.P. Morgan 2026 Long-Term Capital Market '
-    'Assumptions used in the July 2027 deck.</p>', unsafe_allow_html=True)
+    'weights each month. The base case is the J.P. Morgan 2026 Long-Term Capital Market '
+    'Assumptions used in the July 2027 deck; Custom unlocks every input.</p>',
+    unsafe_allow_html=True)
 st.write("")
 
 if off:
@@ -320,7 +369,7 @@ if off:
 # --------------------------------------------------------------------------
 # Run
 # --------------------------------------------------------------------------
-corr_sym = st.session_state.corr.to_numpy(dtype=float)
+corr_sym = corr_df.to_numpy(dtype=float)
 corr_sym = (corr_sym + corr_sym.T) / 2.0
 np.fill_diagonal(corr_sym, 1.0)
 
@@ -370,27 +419,27 @@ for c in ("p05", "p25", "p50", "p75", "p95"):
 log_scale = st.checkbox("Log scale", value=False)
 yscale = alt.Scale(type="log", nice=False) if log_scale else alt.Scale(zero=False, nice=True)
 
-axis_y = alt.Axis(title="Portfolio value (multiple of start)", format=".2f", labelFont="monospace",
-                  labelColor=INK_3, titleColor=INK_3, gridColor=GRID, domain=False,
-                  tickCount=6, labelFontSize=11)
+axis_y = alt.Axis(title="Portfolio value (multiple of start)", format=".2f",
+                  labelFont="monospace", labelColor=INK_3, titleColor=INK_3,
+                  gridColor=GRID, domain=False, tickCount=6, labelFontSize=11)
 axis_x = alt.Axis(title="Years from today", titleColor=INK_3,
                   labelFont="monospace", labelColor=INK_3,
                   grid=False, tickCount=min(res.years, 10), labelFontSize=11)
 
-base = alt.Chart(fan)
-outer = base.mark_area(color=BAND_OUTER).encode(
+base_c = alt.Chart(fan)
+outer = base_c.mark_area(color=BAND_OUTER).encode(
     x=alt.X("Year:Q", axis=axis_x, scale=alt.Scale(nice=False)),
     y=alt.Y("p05:Q", axis=axis_y, scale=yscale), y2="p95:Q")
-inner = base.mark_area(color=BAND_INNER).encode(
+inner = base_c.mark_area(color=BAND_INNER).encode(
     x="Year:Q", y=alt.Y("p25:Q", scale=yscale), y2="p75:Q")
 breakeven = alt.Chart(pd.DataFrame({"y": [1.0]})).mark_rule(
     color=INK_3, strokeDash=[3, 3], opacity=.7, size=1).encode(y=alt.Y("y:Q", scale=yscale))
-median = base.mark_line(color=ACCENT, strokeWidth=2).encode(
+median = base_c.mark_line(color=ACCENT, strokeWidth=2).encode(
     x="Year:Q", y=alt.Y("p50:Q", scale=yscale))
 
 hover = alt.selection_point(fields=["Year"], nearest=True, on="pointerover",
                             empty=False, clear="pointerout")
-rule = base.mark_rule(color=INK_3, strokeDash=[3, 3]).encode(
+rule = base_c.mark_rule(color=INK_3, strokeDash=[3, 3]).encode(
     x="Year:Q",
     opacity=alt.condition(hover, alt.value(0.8), alt.value(0)),
     tooltip=[alt.Tooltip("Year:Q", format=".2f"),
@@ -400,7 +449,7 @@ rule = base.mark_rule(color=INK_3, strokeDash=[3, 3]).encode(
              alt.Tooltip("p25_lbl:N", title="25th"),
              alt.Tooltip("p05_lbl:N", title="5th")],
 ).add_params(hover)
-dot = base.mark_point(color=ACCENT, filled=True, size=60).encode(
+dot = base_c.mark_point(color=ACCENT, filled=True, size=60).encode(
     x="Year:Q", y=alt.Y("p50:Q", scale=yscale),
     opacity=alt.condition(hover, alt.value(1), alt.value(0)))
 
@@ -450,20 +499,22 @@ st.dataframe(
 
 csv = disp.round(4).to_csv(index=False)
 d1, d2 = st.columns([1, 4])
-d1.download_button("Download CSV", csv, "keepp_monte_carlo.csv", "text/csv",
-                   width='stretch')
+d1.download_button("Download CSV", csv,
+                   f"keepp_monte_carlo_{'base' if is_base else 'custom'}.csv",
+                   "text/csv", width='stretch')
 d2.markdown(
     f'<div class="foot" style="padding-top:.5rem">'
-    f'{res.paths:,} paths · {res.years}-year horizon · seed {seed} · monthly rebalancing. '
-    f'P(loss) is the probability the portfolio sits below its starting value at the end '
-    f'of the horizon; the × columns are wealth multiples on a 1.00× start.</div>',
-    unsafe_allow_html=True)
+    f'<b>{"Base · JPM 2026 LTCMA" if is_base else "Custom assumptions"}</b> · '
+    f'{res.paths:,} paths · {res.years}-year horizon · seed {seed} · monthly '
+    f'rebalancing. P(loss) is the probability the portfolio sits below its starting '
+    f'value at the end of the horizon; the × columns are wealth multiples on a '
+    f'1.00× start.</div>', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
 # Sources
 # --------------------------------------------------------------------------
-st.markdown("## Where the defaults come from")
+st.markdown("## Where the base assumptions come from")
 with st.expander("J.P. Morgan 2026 LTCMA · sources and method", expanded=False):
     for name, mini, text in SOURCES:
         a, b = st.columns([1, 3])
