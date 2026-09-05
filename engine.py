@@ -154,3 +154,36 @@ def simulate(
         horizons=horizons,
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
     ), repaired
+
+
+def expand_correlation(bucket_of, bucket_corr, within_bucket):
+    """Build a sleeve-level correlation matrix from a bucket-level one.
+
+    Several sleeves can share one general asset type (two equity lines, say),
+    and the simulation needs a correlation between them. J.P. Morgan does not
+    publish a line-level matrix, so:
+
+      * sleeves in DIFFERENT buckets take the published bucket-to-bucket figure;
+      * sleeves in the SAME bucket take that bucket's `within_bucket` value —
+        one editable assumption per general type, surfaced in the UI rather
+        than hidden in here.
+
+    bucket_of      : list of bucket indices, one per sleeve
+    bucket_corr    : (B x B) matrix between general asset types
+    within_bucket  : list of B correlations, used inside each type
+
+    Returns an (N x N) matrix with a unit diagonal. It is symmetric by
+    construction; simulate() still repairs it if the inputs make it non-PSD.
+    """
+    bucket_of = list(bucket_of)
+    n = len(bucket_of)
+    bc = np.asarray(bucket_corr, dtype=float)
+    wb = np.asarray(within_bucket, dtype=float)
+
+    C = np.eye(n, dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            bi, bj = bucket_of[i], bucket_of[j]
+            c = wb[bi] if bi == bj else bc[bi, bj]
+            C[i, j] = C[j, i] = float(c)
+    return C

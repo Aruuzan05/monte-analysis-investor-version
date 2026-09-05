@@ -5,7 +5,9 @@ A Streamlit app for the target-allocation Monte Carlo. It runs in two modes:
 - **Base · JPM 2026 LTCMA** — every input locked to the figures behind the
   July 2027 deck. This is the read-only reference case.
 - **Custom** — weights, expected returns, volatilities and the full correlation
-  matrix are all editable.
+  matrix are all editable. **Each of the six asset types gets its own table
+  and its own dropdown**, scoped to that type's LTCMA lines, and can hold any
+  number of sleeves.
 
 Either way the app returns the 3y/5y/10y percentile table and a wealth fan
 chart. Switching between modes keeps both sets of inputs: Base always shows the
@@ -202,7 +204,8 @@ security-group rule limiting inbound 8501 to your office range.
 | File | Purpose |
 |---|---|
 | `app.py` | Streamlit UI. No network calls — see the header comment. |
-| `engine.py` | The simulation. Pure numpy, no Streamlit import, unit-testable. |
+| `engine.py` | The simulation plus `expand_correlation()`. Pure numpy, no Streamlit import, unit-testable. |
+| `jpm_ltcma.py` | The 58 LTCMA lines, the six per-type option lists, and the label/number sync rules. No Streamlit import. Update here for the 2027 LTCMA — and add any new line to a group, or the test will fail. |
 | `test_engine.py` | Reconciles Base against the workbook; also exercises a funded hedge fund sleeve and the non-PSD repair path. |
 | `requirements.txt` | Pinned. Verified to resolve and reproduce the workbook. |
 | `Dockerfile` | Mirrors are build args, so it works inside and outside China. |
@@ -221,27 +224,144 @@ python test_engine.py
 
 ## Base assumptions
 
-| Asset class | Weight | Return | Vol |
+| Asset class | LTCMA line | Weight | Return | Vol |
+|---|---|---|---|---|
+| Fixed Income | *manual* — global IG blend | 45% | 5.00% | 7.02% |
+| Public Equities & Mutual Funds | *manual* — MSCI World 10y | 20% | 12.88% | 14.47% |
+| Private Equity & Venture Capital | Private Equity | 10% | 10.20% | 19.78% |
+| Diversified Hedge Funds | Diversified Hedge Funds | 0% | 5.30% | 5.75% |
+| Commodities & Real Assets | Commodities | 8% | 4.60% | 18.32% |
+| Cash & Equivalents | *manual* — 3M T-bill | 17% | 3.80% | 0.67% |
+
+### Compound vs arithmetic — the correction that matters
+
+The LTCMA publishes both a compound (geometric) and an arithmetic return per
+line. **The simulator takes the compound one**: `engine.py` uses
+`m = ln(1+g)/12` and derives the arithmetic return itself as `g + σ²/2`.
+Feeding the arithmetic column in instead double-counts the variance drag.
+
+The original workbook did exactly that for two sleeves, and both are corrected
+here:
+
+| Sleeve | Workbook | JPM compound | JPM arithmetic |
 |---|---|---|---|
-| Fixed Income | 45% | 5.00% | 7.02% |
-| Public Equities & Mutual Funds | 20% | 12.88% | 14.47% |
-| Private Equity & Venture Capital | 10% | 11.90% | 19.80% |
-| Diversified Hedge Funds | 0% | 5.30% | 6.50%* |
-| Commodities & Real Assets | 8% | 6.10% | 18.30% |
-| Cash & Equivalents | 17% | 3.80% | 0.67% |
+| Private Equity | 11.90% | **10.20%** | 11.91% |
+| Commodities | 6.10% | **4.60%** | 6.15% |
+
+Effect on the base case: expected return 7.80% → **7.51%**, 10y median wealth
+2.059× → **2.005×**. The hedge fund volatility also moved, from a 6.50%
+estimate to J.P. Morgan's published **5.75%**.
 
 **Hedge funds carry a 0% base weight on purpose.** The deck's target allocation
 has no hedge fund sleeve, so a zero weight keeps the Base case numerically
 identical to the signed-off workbook. Allocate to it in Custom mode.
 
-**\* The 6.5% hedge fund volatility is an estimate, not a J.P. Morgan figure.**
-J.P. Morgan publishes the diversified hedge fund *return* (5.3%, leveraged and
-net of fees) in its public 2026 LTCMA materials, but the matching volatility
-sits only in the institutional assumptions matrix. 6.5% is in line with the
-realised volatility of a broad hedge fund composite. The hedge fund correlation
-row (EQ 0.75, PE 0.65, FI 0.35, CMD 0.35) is likewise LTCMA-style convention,
-not a published J.P. Morgan matrix. Both are flagged in the app's sources panel
-and are editable in Custom mode — replace them if you hold better numbers.
+The hedge fund correlation row (EQ 0.75, PE 0.65, FI 0.35, CMD 0.35) is
+LTCMA-style convention, not a published J.P. Morgan matrix. It is flagged in
+the app's sources panel and is editable in Custom mode.
+
+### Multiple sleeves per asset type
+
+The allocation table is a flat list of sleeves. Every row carries the general
+asset type it belongs to plus its own LTCMA line, weight, return and volatility,
+so Public Equities can be 12% U.S. Large Cap + 8% Emerging Markets Equity while
+still reading as one 20% equity allocation. The **+** button on a type's table
+adds a sleeve to that type; selecting a row and pressing delete removes it.
+Each type's heading carries its own subtotal and sleeve count.
+
+The general six types stay exactly as they were — they are now the
+**correlation grouping** rather than the unit of allocation.
+
+#### The correlation assumption this forces
+
+Two sleeves inside one asset type need a correlation between them, and
+J.P. Morgan publishes no line-level matrix. So the sleeve-level matrix is built
+at runtime from two editable inputs:
+
+* sleeves in **different** types take the published between-type figure;
+* sleeves in the **same** type take that type's *within-type correlation*.
+
+Defaults, all editable under **Correlations** in the sidebar:
+
+| Asset type | Within-type |
+|---|---|
+| Fixed Income | 0.85 |
+| Public Equities | 0.85 |
+| Private Equity | 0.75 |
+| Hedge Funds | 0.80 |
+| Commodities & Real Assets | 0.45 |
+| Cash | 0.90 |
+
+Real assets get a much lower figure on purpose: commodities, real estate and
+infrastructure genuinely do not move together, and a single high number there
+would understate the diversification.
+
+This is a real simplification and worth stating to a reader. Within fixed
+income especially, long Treasuries and high yield are nothing like 0.85
+correlated — if a split matters to a decision, set that number deliberately
+rather than accepting the default.
+
+`engine.expand_correlation()` does the expansion and is unit-tested: one sleeve
+per type reproduces the 6×6 matrix exactly, and splitting a sleeve in two with
+within-correlation 1.0 reproduces the unsplit portfolio's return and volatility
+to machine precision.
+
+### The six groups
+
+The 58 LTCMA lines are divided across the six general asset types. Each type is
+rendered as its own table, so its dropdown only ever offers its own lines — the
+Hedge Funds table lists the five hedge fund strategies and nothing else.
+
+| Asset type | Lines offered |
+|---|---|
+| Fixed Income | all 21 fixed income lines |
+| Public Equities | all 18 equity lines |
+| Private Equity | Private Equity, Venture Capital, Direct Lending |
+| Hedge Funds | Diversified, Event Driven, Long Bias, Relative Value, Macro |
+| Commodities & Real Assets | Commodities, Gold, the four real estate lines, REITs, Infrastructure, Transport, Timberland, Commercial Mortgage Loans |
+| Cash | U.S. Cash, Short Duration Gov/Credit, Intermediate Treasuries, Muni 1–15yr |
+
+Every one of the 58 lines is reachable from at least one group — asserted in
+`test_engine.py`, so adding a line to the catalogue without grouping it fails
+the test rather than going silently missing. The four short-dated fixed income
+lines appear in both Fixed Income and Cash on purpose: a cash sleeve can
+legitimately hold short-duration government credit.
+
+**Why one table per type rather than one table with a filtered dropdown.**
+Streamlit's `SelectboxColumn` carries a single option list for the whole
+column, not one per row, so a single shared table physically cannot scope the
+list to each row's asset type. Splitting into six editors makes the scoping
+structural instead of something enforced after the fact — which also removed
+the cross-family guard, its warning messages and the family prefixes on the
+labels that the previous build needed.
+
+### Sub-category dropdowns
+
+In Custom mode each bucket can be set to any LTCMA line from its own family —
+21 fixed income, 18 equity, and the 19 alternatives split into private markets,
+hedge funds and real assets. Type in the cell to filter. Picking a line fills
+Return and Vol from the compound column.
+
+Three rules keep the label honest about the numbers:
+
+1. Picking a line overwrites Return and Vol from the catalogue.
+2. Editing Return or Vol by hand flips the label to *Manual entry*, so a sleeve
+   never claims J.P. Morgan provenance for figures that are no longer theirs.
+3. A row added by the editor arrives blank; it defaults to Manual entry with a
+   0% weight, so it cannot silently poison the weight total.
+4. A stored line that is not in its group's list — only reachable from stale
+   session state after the catalogue changes — falls back to Manual entry
+   rather than sticking.
+
+Swapping a line does not change its correlation row — that follows the asset
+type, not the line. Adjust the type matrix or the within-type figure by hand if
+a swap materially changes a sleeve's character.
+
+**Worth knowing before a demo:** every forward-looking JPM equity line sits
+5–6pp below the 12.88% realised MSCI World figure, with higher volatility.
+Switching Public Equities to `AC World Equity` (7.00% / 16.78%) moves 10y
+median wealth from 2.005× to 1.808×. It is the single biggest lever in the
+model.
 
 The 6x6 correlation matrix is verified positive semi-definite (minimum
 eigenvalue 0.067), so it factorises without repair.
@@ -268,6 +388,10 @@ funds sit at 0% in Base, adding the sixth asset class leaves these unchanged:
 | 10y median annualized | 7.49% | 7.52% |
 | 10y median wealth | 2.059× | 2.064× |
 | 10y P(loss) | 0.09% | 0.09% |
+
+That check feeds the engine the workbook's *own* inputs, so it still ties out
+exactly. The shipped Base case uses the corrected compound returns above and
+therefore reads 7.51% / 2.005× — the difference is the error, not drift.
 
 Differences are Monte Carlo sampling noise. The seed is fixed (default
 `20260722`), so everyone running the same inputs sees the same numbers.
