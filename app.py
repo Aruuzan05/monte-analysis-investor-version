@@ -125,12 +125,14 @@ if not password_ok():
 
 
 # --------------------------------------------------------------------------
-# Base case — J.P. Morgan 2026 LTCMA (hardcoded, never edited in Base mode)
+# Base case — J.P. Morgan 2026 LTCMA. Returns, volatilities and the sleeve list
+# are hardcoded and cannot be edited in Base; the WEIGHTS can, so a manager can
+# re-weight the deck's own assumptions without leaving them. The shipped weights
+# below are the deck's, and "Reset weights to the deck" restores them.
 #
 # Diversified Hedge Funds carries a 0% base weight on purpose: the July 2027
 # deck's target allocation has no hedge fund sleeve, so a zero weight keeps the
-# Base case numerically identical to the signed-off Excel workbook. Allocate to
-# it in Custom mode.
+# shipped Base case numerically identical to the signed-off Excel workbook.
 # --------------------------------------------------------------------------
 # The three J.P. Morgan categories. Every sleeve belongs to one of them, and
 # each gets its own table whose dropdown offers exactly that category's lines.
@@ -249,12 +251,19 @@ SOURCES = [
 COLS = ["LTCMA line", "Weight %", "Return %", "Vol %"]
 
 
-def base_alloc() -> pd.DataFrame:
-    """Base, read-only: the deck's allocation as six sleeves in three categories."""
+# The deck's own weights, kept separately so "reset to the deck" always has
+# something to reset to no matter what the user has typed.
+BASE_WEIGHTS = [w for _, _, w, _, _, _ in BASE_SLEEVES]
+
+
+def base_alloc(weights=None) -> pd.DataFrame:
+    """The deck's six sleeves. Weights are the caller's; everything else is the
+    deck's and is not editable in Base — that is the whole point of Base."""
+    ws = BASE_WEIGHTS if weights is None else list(weights)
     return pd.DataFrame(
         [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
-          "Weight %": w, "Return %": r, "Vol %": v}
-         for k, line, w, r, v, _ in BASE_SLEEVES])
+          "Weight %": float(w), "Return %": r, "Vol %": v}
+         for (k, line, _, r, v, _), w in zip(BASE_SLEEVES, ws)])
 
 
 def custom_alloc_seed() -> pd.DataFrame:
@@ -301,6 +310,7 @@ if "custom_alloc" not in st.session_state:
     # Custom starts as a copy of the base case, so switching modes is a
     # starting point rather than a blank slate.
     st.session_state.custom_alloc = custom_alloc_seed()
+    st.session_state.base_weights = list(BASE_WEIGHTS)
     st.session_state.mode = MODE_BASE
 
 NONCE = st.session_state.get("editor_nonce", 0)
@@ -324,7 +334,7 @@ with st.sidebar:
     mode = st.radio(
         "Assumption set", [MODE_BASE, MODE_CUSTOM],
         key="mode", label_visibility="collapsed",
-        captions=["Locked to the deck", "Edit everything"],
+        captions=["Deck assumptions, your weights", "Edit everything"],
     )
     is_base = mode == MODE_BASE
 
@@ -337,8 +347,13 @@ with st.sidebar:
                            help="Fix the seed so everyone running the same "
                                 "inputs sees the same numbers.")
 
-    if not is_base:
-        st.divider()
+    st.divider()
+    if is_base:
+        if st.button("Reset weights to the deck", width='stretch'):
+            st.session_state.base_weights = list(BASE_WEIGHTS)
+            bump_editors()
+            st.rerun()
+    else:
         if st.button("Reset Custom to JPM defaults", width='stretch'):
             st.session_state.custom_alloc = custom_alloc_seed()
             bump_editors()
@@ -355,8 +370,9 @@ st.markdown('<div class="eyebrow">Keepp Capital · Target Allocation</div>',
 st.markdown(f"# Monte Carlo Allocation Simulator{chip}", unsafe_allow_html=True)
 st.markdown(
     '<p class="sub">Correlated lognormal paths, monthly steps, rebalanced to target '
-    'weights each month. The base case is the J.P. Morgan 2026 Long-Term Capital Market '
-    'Assumptions used in the July 2027 deck; Custom unlocks every input.</p>',
+    'weights each month. The base case holds the J.P. Morgan 2026 Long-Term Capital Market '
+    'Assumptions used in the July 2027 deck and lets you re-weight them; Custom unlocks '
+    'every input.</p>',
     unsafe_allow_html=True)
 st.write("")
 
@@ -367,30 +383,54 @@ st.write("")
 st.markdown("## Allocation")
 
 if is_base:
-    alloc = base_alloc()
-    st.dataframe(
-        alloc, hide_index=True, width='stretch',
+    # Weights are editable; the sleeve list, returns and volatilities are not.
+    # Re-weighting the deck's own assumptions is the question a PM actually
+    # asks of a base case ("what if we took equities to 25?"), and answering it
+    # here rather than in Custom keeps the answer on figures nobody has
+    # touched. Every other column is disabled, so a Base run is always the
+    # deck's assumptions — only the mix moves.
+    edited_base = st.data_editor(
+        base_alloc(st.session_state.base_weights),
+        key=f"base_{NONCE}",
+        hide_index=True,
+        width='stretch',
+        num_rows="fixed",
+        disabled=["Category", "LTCMA line", "Return %", "Vol %"],
         column_config={
             "Category": st.column_config.TextColumn(width="small"),
             "LTCMA line": st.column_config.TextColumn(
                 width="medium",
                 help="The J.P. Morgan line this sleeve is filed under. It "
                      "supplies the sleeve's row of the published correlation "
-                     "matrix."),
-            "Weight %": st.column_config.NumberColumn(format="%.2f"),
+                     "matrix. Fixed in Base — switch to Custom to change it."),
+            # step MUST stay 0.01, as in the Custom tables: a coarser step makes
+            # the editor snap the *displayed* value to it.
+            "Weight %": st.column_config.NumberColumn(
+                min_value=0.0, max_value=100.0, step=0.01, format="%.2f",
+                help="The only editable field in Base. Returns, volatilities "
+                     "and the sleeve list stay as the deck has them."),
             "Return %": st.column_config.NumberColumn(format="%.2f"),
             "Vol %": st.column_config.NumberColumn(format="%.2f"),
         },
     )
+    # Read the weights straight back out, so the stats below reflect the edit on
+    # this run rather than one interaction late. Session state only has to carry
+    # them across the next rerun.
+    new_w = [float(x) if x == x else 0.0
+             for x in pd.to_numeric(edited_base["Weight %"], errors="coerce")]
+    st.session_state.base_weights = new_w
+    alloc = base_alloc(new_w)
+
     st.caption(
-        "Locked to the J.P. Morgan 2026 LTCMA figures behind the July 2027 "
-        "deck. Three sleeves carry Keepp's own Return and Vol rather than "
+        "Returns and volatilities are locked to the J.P. Morgan 2026 LTCMA "
+        "figures behind the July 2027 deck — **only the weights are editable "
+        "here.** Three sleeves carry Keepp's own Return and Vol rather than "
         "J.P. Morgan's — "
         + ", ".join(f"**{ln}** ({b.split('·', 1)[1].strip()})"
                     for ln, b in KEEPP_SOURCED)
         + " — and are filed under the line that supplies their correlation "
           "row. Switch to **Custom** in the sidebar to add sleeves or change "
-          "any input.")
+          "any other input.")
 else:
     st.caption("One table per J.P. Morgan category — each dropdown offers only "
                "that category's LTCMA lines. **+** adds a sleeve; select a row "
@@ -467,12 +507,16 @@ tc1.markdown(
     f'TOTAL &nbsp;<b style="color:{BRICK if off else ACCENT}">{wsum:.2f}%</b>'
     f'&nbsp;&nbsp;<span style="color:{INK_3};font-size:.78rem">'
     f'{len(alloc)} sleeves</span></div>', unsafe_allow_html=True)
-if not is_base and off:
+if off:
     if tc1.button("Normalize to 100%", width='stretch'):
         if wsum > 0:
-            st.session_state.custom_alloc["Weight %"] = (
-                pd.to_numeric(st.session_state.custom_alloc["Weight %"],
-                              errors="coerce").fillna(0) / wsum * 100).round(4)
+            if is_base:
+                st.session_state.base_weights = [
+                    round(x / wsum * 100, 4) for x in st.session_state.base_weights]
+            else:
+                st.session_state.custom_alloc["Weight %"] = (
+                    pd.to_numeric(st.session_state.custom_alloc["Weight %"],
+                                  errors="coerce").fillna(0) / wsum * 100).round(4)
             bump_editors()
             st.rerun()
         else:
@@ -480,8 +524,8 @@ if not is_base and off:
 
 if off:
     st.error(f"**Weights total {wsum:.2f}%.** They must sum to 100% before the "
-             f"simulation can run. Adjust a weight in the sidebar, or use Normalize "
-             f"to scale them all proportionally.")
+             f"simulation can run. Adjust a weight in the table above, or use "
+             f"Normalize to scale them all proportionally.")
     st.stop()
 
 # --------------------------------------------------------------------------

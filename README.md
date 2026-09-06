@@ -2,9 +2,13 @@
 
 A Streamlit app for the target-allocation Monte Carlo. It runs in two modes:
 
-- **Base · JPM 2026 LTCMA** — every input locked to the figures behind the
-  July 2027 deck. This is the read-only reference case.
-- **Custom** — weights, returns and volatilities are editable, and each of
+- **Base · JPM 2026 LTCMA** — the sleeve list, returns and volatilities are
+  locked to the figures behind the July 2027 deck; **the weights are editable.**
+  Re-weighting the deck's own assumptions is the question a base case is for
+  ("what if we took equities to 25?"), and answering it here keeps the answer on
+  figures nobody has touched. *Reset weights to the deck* restores the shipped
+  mix.
+- **Custom** — weights, returns and volatilities are all editable, and each of
   **J.P. Morgan's three categories** (Fixed Income, Equities, Alternatives)
   gets its own table and its own dropdown scoped to that category's LTCMA
   lines. A category can hold any number of sleeves.
@@ -13,8 +17,10 @@ Correlations are **not** editable and not assumed: they come from J.P. Morgan's
 published 59 × 59 matrix, shipped as `jpm_correlations.csv`.
 
 Either way the app returns the 3y/5y/10y percentile table and a wealth fan
-chart. Switching between modes keeps both sets of inputs: Base always shows the
-JPM figures, and Custom remembers your edits.
+chart, and weights must total 100% before it will run — *Normalize to 100%*
+scales them proportionally in either mode. Switching between modes keeps both
+sets of inputs: Base keeps the JPM figures and your weights, Custom remembers
+your edits, and neither disturbs the other.
 
 Three categories, 58 LTCMA lines: Fixed Income (21), Equities (18),
 Alternatives (19).
@@ -236,6 +242,9 @@ python test_engine.py
 | Private Equity | 10% | 10.20% | 19.78% | J.P. Morgan |
 | Diversified Hedge Funds | 0% | 5.30% | 5.75% | J.P. Morgan |
 | Commodities | 8% | 4.60% | 18.32% | J.P. Morgan |
+
+The weights above are the deck's and are what *Reset weights to the deck*
+restores; in Base they are editable and everything else in the table is not.
 
 Every sleeve sits on a named LTCMA line, and that line selects the sleeve's row
 of the published correlation matrix. Three sleeves carry Keepp's own return and
