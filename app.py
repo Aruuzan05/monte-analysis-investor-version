@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 import jpm_ltcma as jpm
-from engine import expand_correlation, simulate
+from engine import simulate
 
 # --------------------------------------------------------------------------
 # Page config + palette
@@ -132,58 +132,45 @@ if not password_ok():
 # Base case numerically identical to the signed-off Excel workbook. Allocate to
 # it in Custom mode.
 # --------------------------------------------------------------------------
-ASSETS = ["Fixed Income", "Public Equities & Mutual Funds",
-          "Private Equity & Venture Capital", "Diversified Hedge Funds",
-          "Commodities & Real Assets", "Cash & Equivalents"]
-TAGS = ["FI", "EQ", "PE", "HF", "CMD", "CASH"]
-# The sidebar is 452px wide; the full names above clip the numeric columns, so
-# the editor shows these and the sources section carries the full names.
-SHORT = ["Fixed Income", "Public Equities", "Private Equity",
-         "Hedge Funds", "Commodities", "Cash"]
+# The three J.P. Morgan categories. Every sleeve belongs to one of them, and
+# each gets its own table whose dropdown offers exactly that category's lines.
+CATEGORY_KEYS = jpm.CATEGORY_KEYS                   # ["FI", "EQ", "ALT"]
+CATEGORIES = [jpm.CATEGORY_NAME[k] for k in CATEGORY_KEYS]
+KEY_OF = dict(zip(CATEGORIES, CATEGORY_KEYS))
 
-DEF_W = [45.0, 20.0, 10.0, 0.0, 8.0, 17.0]
-# Returns are COMPOUND (geometric). engine.py converts with ln(1+g)/12 and
-# derives the arithmetic return as g + sigma^2/2, so feeding JPM's arithmetic
-# column here would double-count the variance drag. The original workbook did
-# that for Private Equity (11.90 instead of 10.20) and Commodities (6.15
-# instead of 4.60); both are corrected below, as is the hedge fund volatility
-# (5.75 is JPM's published figure, replacing an earlier 6.50 estimate).
-DEF_R = [5.00, 12.88, 10.20, 5.30, 4.60, 3.80]
-DEF_V = [7.02, 14.47, 19.78, 5.75, 18.32, 0.67]
-
-# Which LTCMA line each bucket resolves to. Three of the six are deliberately
-# NOT a JPM line and stay hand-set — that is visible in the UI rather than
-# buried in a footnote.
-BASE_SUB = ["Manual — global IG corporate blend",
-            "Manual — MSCI World 10y history",
-            jpm.LABEL["Private Equity"],
-            jpm.LABEL["Diversified Hedge Funds"],
-            jpm.LABEL["Commodities"],
-            "Manual — 3M U.S. T-bill"]
-# The same six as dropdown values (Custom mode uses the catalogue's own labels).
-CUSTOM_SUB = [jpm.MANUAL, jpm.MANUAL, jpm.LABEL["Private Equity"],
-              jpm.LABEL["Diversified Hedge Funds"], jpm.LABEL["Commodities"],
-              jpm.MANUAL]
-CHOICE_KEYS = ["FI", "EQ", "PE", "HF", "CMD", "CASH"]
-
-# Correlation BETWEEN two sleeves that share a general asset type. J.P. Morgan
-# publishes no line-level matrix, so one number per bucket stands in — editable
-# in Advanced, and only used once a bucket holds more than one sleeve.
-# Real assets get a much lower figure than the rest: commodities, real estate
-# and infrastructure genuinely do not move together.
-WITHIN_BUCKET = [0.85, 0.85, 0.75, 0.80, 0.45, 0.90]
-
-# Order: FI, EQ, PE, HF, CMD, CASH. Verified positive semi-definite
-# (min eigenvalue 0.067), so it factorises without repair.
-DEF_CORR = [
-    [1.00, 0.68, 0.30, 0.35, 0.10, 0.00],
-    [0.68, 1.00, 0.80, 0.75, 0.30, 0.00],
-    [0.30, 0.80, 1.00, 0.65, 0.25, 0.00],
-    [0.35, 0.75, 0.65, 1.00, 0.35, 0.00],
-    [0.10, 0.30, 0.25, 0.35, 1.00, 0.00],
-    [0.00, 0.00, 0.00, 0.00, 0.00, 1.00],
+# Base case — the July 2027 deck's target allocation, expressed as sleeves.
+# Returns are COMPOUND (geometric): engine.py converts with ln(1+g)/12 and
+# derives the arithmetic return as g + sigma^2/2, so JPM's arithmetic column
+# would double-count the variance drag. The original workbook did that for
+# Private Equity (11.90 not 10.20) and Commodities (6.15 not 4.60).
+#
+# Every sleeve sits on an LTCMA line, and that line is what selects the row of
+# J.P. Morgan's correlation matrix the sleeve uses. Three of the six carry
+# Keepp's own return and volatility rather than J.P. Morgan's — a global IG
+# blend, MSCI World realised history, and the live 3-month T-bill — so they are
+# expressed as EDITED versions of the closest line. The `basis` field is the
+# one-line provenance named in the caption under the Base table; an empty
+# string means the sleeve is J.P. Morgan's numbers untouched.
+#
+# Filing them this way rather than as anonymous "manual" rows is what removed
+# the old hand-picked correlation proxy column. The correlation rows are
+# unchanged: the three proxies used to be exactly these three lines, so Base's
+# return, volatility and percentiles are identical to the previous build.
+#
+# Hedge funds sit at 0%: the deck has no hedge fund sleeve, and a zero weight
+# keeps Base's return and volatility identical to the signed-off workbook.
+BASE_SLEEVES = [
+    # category, LTCMA line,                 weight, return,   vol,   basis
+    ("FI",  "U.S. Inv Grade Corporate Bonds", 45.0,   5.00,   7.02,
+     "Keepp · global IG blend"),
+    ("FI",  "U.S. Cash",                      17.0,   3.80,   0.67,
+     "Keepp · 3M T-bill"),
+    ("EQ",  "AC World Equity",                20.0,  12.88,  14.47,
+     "Keepp · MSCI World 10y"),
+    ("ALT", "Private Equity",                 10.0,  10.20,  19.78,  ""),
+    ("ALT", "Diversified Hedge Funds",         0.0,   5.30,   5.75,  ""),
+    ("ALT", "Commodities",                     8.0,   4.60,  18.32,  ""),
 ]
-N = len(ASSETS)
 
 MODE_BASE = "Base · JPM 2026 LTCMA"
 MODE_CUSTOM = "Custom"
@@ -216,24 +203,37 @@ SOURCES = [
      "Return: current USD risk-free rate, 3-month T-bill at 3.80% (15-Jul-2026). "
      "Volatility: JPM 2026 LTCMA US Cash. Includes the 2% digital-assets sleeve, "
      "folded into cash per instruction."),
-    ("Sub-categories", "58 LTCMA lines",
-     "In Custom mode each bucket can be pointed at any J.P. Morgan 2026 LTCMA line "
-     "from its own family — 21 fixed income, 18 equity and the alternatives split "
-     "into private markets, hedge funds and real assets. Picking one fills Return and "
-     "Vol from the <b>compound</b> column. Editing either number by hand flips the "
-     "label back to Manual entry, so a row never claims a JPM provenance for figures "
-     "that are no longer JPM's. Fixed Income, Public Equities and Cash ship as Manual "
-     "because their base figures are deliberately not LTCMA lines — a global IG "
-     "blend, MSCI World realised history, and the live 3-month T-bill. "
-     "<b>Note:</b> every forward-looking JPM equity line sits 5-6pp below the 12.88% "
-     "realised figure, with higher volatility."),
-    ("Correlations", "Convention",
-     "EQ–FI 0.68 is the 10-year monthly correlation. PE–EQ 0.80 follows the J.P. Morgan "
-     "de-smoothed convention. The hedge fund row (EQ 0.75, PE 0.65, FI 0.35, CMD 0.35) is "
-     "LTCMA-style convention reflecting the equity beta embedded in a diversified hedge "
-     "fund composite — <b>not</b> a published J.P. Morgan matrix. Editable in Custom mode. "
-     "They stay at the six-bucket level: swapping a sub-category does not change the "
-     "correlation row, because J.P. Morgan does not publish a line-level matrix."),
+    ("Sub-categories", "3 categories · 58 lines",
+     "Sleeves are grouped into J.P. Morgan's own three categories — Fixed Income "
+     "(21 lines), Equities (18) and Alternatives (19). Each category has its own "
+     "table and dropdown, so the list only ever offers that category's lines. "
+     "Picking one fills Return and Vol from the <b>compound</b> column. Editing "
+     "either number by hand keeps the sleeve on its line — the line is what "
+     "supplies the correlation row, so an override changes the figures without "
+     "detaching the sleeve from the matrix."),
+    ("Correlations", "JPM 2026 LTCMA, USD",
+     "<b>The full published 59 × 59 matrix</b>, shipped unmodified as "
+     "<code>jpm_correlations.csv</code> so it can be diffed against the report. "
+     "Nothing is assumed: the matrix used in any run is a sub-matrix of it, "
+     "selected by each sleeve's correlation row. Earlier builds carried a "
+     "fabricated 6 × 6 plus a guessed within-type number; both are gone, as is "
+     "the hand-picked correlation proxy that replaced them. "
+     "<b>One numerical note:</b> as published the matrix is not positive "
+     "semi-definite (smallest eigenvalue −0.0161), which is normal for figures "
+     "rounded to two decimals and is compounded by U.S. Core and U.S. "
+     "Value-Added Real Estate sharing one underlying series. It is repaired once "
+     "at load with Higham's nearest-correlation algorithm; the largest single "
+     "cell moves 0.0066 and no pair moves as much as 0.01."),
+    ("Keepp-sourced sleeves", "3 of 6 in Base",
+     "Three base sleeves carry Keepp's own return and volatility rather than "
+     "J.P. Morgan's: a global IG blend (5.00% · 7.02%), MSCI World realised "
+     "10-year history (12.88% · 14.47%) and the live 3-month T-bill (3.80% · "
+     "0.67%). Each is filed under the line it most closely is — U.S. Inv Grade "
+     "Corporate Bonds, AC World Equity and U.S. Cash respectively — which is "
+     "what supplies its correlation row. <b>Nothing is chosen by hand:</b> "
+     "earlier builds asked the user to pick a separate correlation proxy for "
+     "every sleeve. Filing a sleeve under a line answers that question once, "
+     "at the point where the user is already naming the asset."),
     ("Method", "Regime-based vol",
      "Returns are entered as geometric per annum and simulated as correlated lognormal "
      "monthly draws, with the portfolio rebalanced to target weights every month. Vol "
@@ -246,38 +246,39 @@ SOURCES = [
 # --------------------------------------------------------------------------
 # Session state
 # --------------------------------------------------------------------------
+COLS = ["LTCMA line", "Weight %", "Return %", "Vol %"]
+
+
 def base_alloc() -> pd.DataFrame:
-    return pd.DataFrame({"Asset type": SHORT, "LTCMA line": BASE_SUB,
-                         "Weight %": DEF_W, "Return %": DEF_R, "Vol %": DEF_V})
+    """Base, read-only: the deck's allocation as six sleeves in three categories."""
+    return pd.DataFrame(
+        [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
+          "Weight %": w, "Return %": r, "Vol %": v}
+         for k, line, w, r, v, _ in BASE_SLEEVES])
 
 
 def custom_alloc_seed() -> pd.DataFrame:
-    """Custom starts as one sleeve per general asset type. Rows are dynamic:
-    a bucket can hold as many sleeves as you like, each with its own LTCMA
-    line and weight."""
-    return pd.DataFrame({"Asset type": SHORT, "LTCMA line": CUSTOM_SUB,
-                         "Weight %": DEF_W, "Return %": DEF_R, "Vol %": DEF_V})
+    """Custom starts from Base — same six sleeves, same lines, same numbers."""
+    return pd.DataFrame(
+        [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
+          "Weight %": w, "Return %": r, "Vol %": v}
+         for k, line, w, r, v, _ in BASE_SLEEVES])
 
 
-def base_corr() -> pd.DataFrame:
-    return pd.DataFrame(DEF_CORR, index=TAGS, columns=TAGS)
+# The three sleeves whose Return and Vol are Keepp's rather than J.P. Morgan's.
+# Named in a caption under the Base table instead of a column: the provenance
+# still needs saying, but not once per row on every render.
+KEEPP_SOURCED = [(line, basis) for _, line, _, _, _, basis in BASE_SLEEVES if basis]
 
 
-def base_within() -> pd.DataFrame:
-    return pd.DataFrame({"Within-type correlation": WITHIN_BUCKET}, index=SHORT)
-
-
-def sleeve_inputs(alloc: pd.DataFrame, bucket_corr, within):
+def sleeve_inputs(alloc: pd.DataFrame):
     """Turn the sleeve table into the arrays simulate() needs.
 
-    Each row is one sleeve. Its general asset type decides which correlation
-    row it uses, so two equity sleeves correlate with each other at the
-    within-type figure and with everything else at the published bucket
-    figure.
+    The correlation matrix is a sub-matrix of J.P. Morgan's published 59x59,
+    selected by each sleeve's LTCMA line. Nothing is assumed and nothing is
+    borrowed — the numbers come straight from the CSV (repaired once at import).
     """
-    bucket_of = [SHORT.index(b) if b in SHORT else 0
-                 for b in alloc["Asset type"]]
-    corr = expand_correlation(bucket_of, bucket_corr, within)
+    corr = jpm.corr_for(list(alloc["LTCMA line"]))
     return (tuple(alloc["Weight %"]), tuple(alloc["Return %"]),
             tuple(alloc["Vol %"]), corr)
 
@@ -300,8 +301,6 @@ if "custom_alloc" not in st.session_state:
     # Custom starts as a copy of the base case, so switching modes is a
     # starting point rather than a blank slate.
     st.session_state.custom_alloc = custom_alloc_seed()
-    st.session_state.custom_corr = base_corr()
-    st.session_state.custom_within = base_within()
     st.session_state.mode = MODE_BASE
 
 NONCE = st.session_state.get("editor_nonce", 0)
@@ -329,13 +328,6 @@ with st.sidebar:
     )
     is_base = mode == MODE_BASE
 
-    if is_base:
-        corr_df = base_corr()
-        within_df = base_within()
-    else:
-        corr_df = st.session_state.custom_corr
-        within_df = st.session_state.custom_within
-
     st.divider()
     paths = st.select_slider(
         "Simulation paths", options=[1_000, 2_500, 5_000, 10_000, 25_000, 50_000],
@@ -345,47 +337,10 @@ with st.sidebar:
                            help="Fix the seed so everyone running the same "
                                 "inputs sees the same numbers.")
 
-    with st.expander("Correlations"):
-        st.caption("Between asset types")
-        if is_base:
-            st.dataframe(corr_df, width='stretch',
-                         column_config={t: st.column_config.NumberColumn(format="%.2f")
-                                        for t in TAGS})
-            st.caption("Between two sleeves of the same type")
-            st.dataframe(within_df, width='stretch',
-                         column_config={"Within-type correlation":
-                                        st.column_config.NumberColumn(format="%.2f")})
-            st.caption("Switch to **Custom** to edit either.")
-        else:
-            corr_df = st.data_editor(
-                st.session_state.custom_corr, key=f"corr_editor_{NONCE}",
-                width='stretch',
-                column_config={t: st.column_config.NumberColumn(
-                    min_value=-1.0, max_value=1.0, step=0.01, format="%.2f")
-                    for t in TAGS})
-            st.session_state.custom_corr = corr_df
-            st.caption("Between two sleeves of the **same** type — only used "
-                       "once a type holds more than one sleeve. J.P. Morgan "
-                       "publishes no line-level matrix, so this one number per "
-                       "type stands in for it.")
-            within_df = st.data_editor(
-                st.session_state.custom_within, key=f"within_editor_{NONCE}",
-                width='stretch',
-                column_config={"Within-type correlation":
-                               st.column_config.NumberColumn(
-                                   min_value=-1.0, max_value=1.0, step=0.01,
-                                   format="%.2f")})
-            st.session_state.custom_within = within_df
-            st.caption("Type-matrix edits are mirrored across the diagonal. An "
-                       "inconsistent matrix is repaired to the nearest valid "
-                       "one, with a warning.")
-
     if not is_base:
         st.divider()
         if st.button("Reset Custom to JPM defaults", width='stretch'):
             st.session_state.custom_alloc = custom_alloc_seed()
-            st.session_state.custom_corr = base_corr()
-            st.session_state.custom_within = base_within()
             bump_editors()
             st.rerun()
 
@@ -416,75 +371,81 @@ if is_base:
     st.dataframe(
         alloc, hide_index=True, width='stretch',
         column_config={
-            "Asset type": st.column_config.TextColumn(width="medium"),
-            "LTCMA line": st.column_config.TextColumn(width="large"),
+            "Category": st.column_config.TextColumn(width="small"),
+            "LTCMA line": st.column_config.TextColumn(
+                width="medium",
+                help="The J.P. Morgan line this sleeve is filed under. It "
+                     "supplies the sleeve's row of the published correlation "
+                     "matrix."),
             "Weight %": st.column_config.NumberColumn(format="%.2f"),
             "Return %": st.column_config.NumberColumn(format="%.2f"),
             "Vol %": st.column_config.NumberColumn(format="%.2f"),
         },
     )
-    st.caption("Locked to the J.P. Morgan 2026 LTCMA figures behind the July "
-               "2027 deck — one sleeve per asset type. Switch to **Custom** in "
-               "the sidebar to split a type across several LTCMA lines.")
+    st.caption(
+        "Locked to the J.P. Morgan 2026 LTCMA figures behind the July 2027 "
+        "deck. Three sleeves carry Keepp's own Return and Vol rather than "
+        "J.P. Morgan's — "
+        + ", ".join(f"**{ln}** ({b.split('·', 1)[1].strip()})"
+                    for ln, b in KEEPP_SOURCED)
+        + " — and are filed under the line that supplies their correlation "
+          "row. Switch to **Custom** in the sidebar to add sleeves or change "
+          "any input.")
 else:
-    st.caption("Each asset type has its own table and its own dropdown, so the "
-               "list only ever offers that type's LTCMA lines. **+** adds a "
-               "sleeve to that type; select a row and press delete to remove "
-               "it. Type in a cell to filter. Picking a line fills Return and "
-               "Vol; typing over either number flips the row to Manual entry. "
-               "★ marks one of the 14 expansion-proposal lines.")
+    st.caption("One table per J.P. Morgan category — each dropdown offers only "
+               "that category's LTCMA lines. **+** adds a sleeve; select a row "
+               "and press delete to remove it. Type in a cell to filter. "
+               "Picking a line fills Return and Vol with J.P. Morgan's figures; "
+               "type over either one and the sleeve keeps your number and stays "
+               "on its line. ★ marks one of the 14 expansion-proposal lines.")
 
     store = st.session_state.custom_alloc
     parts, dirty_any = [], False
-    SLEEVE_COLS = ["LTCMA line", "Weight %", "Return %", "Vol %"]
 
-    # Two columns of three groups: six full-width tables stacked would push the
-    # results a screen and a half down the page.
-    col_l, col_r = st.columns(2, gap="medium")
-    for gi, (short, key) in enumerate(zip(SHORT, CHOICE_KEYS)):
-        host = col_l if gi % 2 == 0 else col_r
-        with host:
-            g_prev = (store[store["Asset type"] == short]
-                      .reset_index(drop=True)[SLEEVE_COLS])
-            g_sum = pd.to_numeric(g_prev["Weight %"], errors="coerce").fillna(0).sum()
-            host.markdown(
-                f'<div style="display:flex;justify-content:space-between;'
-                f'align-items:baseline;margin:.5rem 0 .15rem">'
-                f'<span style="font-weight:600;font-size:.88rem">{short}</span>'
-                f'<span style="font-family:{MONO};font-size:.75rem;color:{INK_3}">'
-                f'{g_sum:.2f}%{"  ·  " + str(len(g_prev)) + " sleeves" if len(g_prev) != 1 else ""}'
-                f'</span></div>', unsafe_allow_html=True)
-            edited = st.data_editor(
-                g_prev,
-                key=f"grp_{key}_{NONCE}",
-                hide_index=True,
-                width='stretch',
-                num_rows="dynamic",
-                column_config={
-                    # Options are scoped to THIS asset type — that is the whole
-                    # point of one editor per group. Streamlit's SelectboxColumn
-                    # carries a single option list per column, so a shared table
-                    # could not do this.
-                    "LTCMA line": st.column_config.SelectboxColumn(
-                        options=jpm.CHOICES[key], width="medium", required=True,
-                        help=f"J.P. Morgan 2026 LTCMA lines available for "
-                             f"{short}. Type to filter. ★ marks an "
-                             f"expansion-proposal line."),
-                    # step MUST stay 0.01: a coarser step makes the editor snap
-                    # the *displayed* value to it, so 12.88 renders as 12.80 and
-                    # a single click would commit the wrong number.
-                    "Weight %": st.column_config.NumberColumn(
-                        min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
-                    "Return %": st.column_config.NumberColumn(
-                        min_value=-20.0, max_value=60.0, step=0.01, format="%.2f"),
-                    "Vol %": st.column_config.NumberColumn(
-                        min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
-                },
-            )
-            synced, d = jpm.sync_group(g_prev, edited, key)
-            dirty_any = dirty_any or d
-            synced.insert(0, "Asset type", short)
-            parts.append(synced)
+    for key in CATEGORY_KEYS:
+        cat = jpm.CATEGORY_NAME[key]
+        g_prev = (store[store["Category"] == cat]
+                  .reset_index(drop=True)[COLS])
+        g_sum = pd.to_numeric(g_prev["Weight %"], errors="coerce").fillna(0).sum()
+        st.markdown(
+            f'<div style="display:flex;justify-content:space-between;'
+            f'align-items:baseline;margin:1rem 0 .15rem">'
+            f'<span style="font-weight:600;font-size:.92rem">{cat}</span>'
+            f'<span style="font-family:{MONO};font-size:.75rem;color:{INK_3}">'
+            f'{g_sum:.2f}%  ·  {len(g_prev)} sleeve{"s" if len(g_prev) != 1 else ""}'
+            f'  ·  {len(jpm.CHOICES[key])} LTCMA lines available</span></div>',
+            unsafe_allow_html=True)
+        edited = st.data_editor(
+            g_prev,
+            key=f"grp_{key}_{NONCE}",
+            hide_index=True,
+            width='stretch',
+            num_rows="dynamic",
+            column_config={
+                # Options are scoped to THIS category — the reason each category
+                # gets its own editor. Streamlit's SelectboxColumn carries a
+                # single option list per column, so one shared table could not.
+                "LTCMA line": st.column_config.SelectboxColumn(
+                    options=jpm.CHOICES[key], width="medium", required=True,
+                    help=f"J.P. Morgan 2026 LTCMA lines in {cat}. Type to "
+                         f"filter. ★ marks an expansion-proposal line. The "
+                         f"line also supplies this sleeve's row of the "
+                         f"published correlation matrix."),
+                # step MUST stay 0.01: a coarser step makes the editor snap the
+                # *displayed* value to it, so 12.88 renders as 12.80 and a
+                # single click would commit the wrong number.
+                "Weight %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
+                "Return %": st.column_config.NumberColumn(
+                    min_value=-20.0, max_value=60.0, step=0.01, format="%.2f"),
+                "Vol %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
+            },
+        )
+        synced, d = jpm.sync_group(g_prev, edited, key)
+        dirty_any = dirty_any or d
+        synced.insert(0, "Category", cat)
+        parts.append(synced)
 
     alloc = (pd.concat(parts, ignore_index=True) if parts
              else custom_alloc_seed().iloc[0:0])
@@ -526,13 +487,7 @@ if off:
 # --------------------------------------------------------------------------
 # Run
 # --------------------------------------------------------------------------
-# Symmetrise the between-type matrix, then expand it to one row per sleeve.
-corr_sym = corr_df.to_numpy(dtype=float)
-corr_sym = (corr_sym + corr_sym.T) / 2.0
-np.fill_diagonal(corr_sym, 1.0)
-within = np.clip(within_df.to_numpy(dtype=float).ravel(), -1.0, 1.0)
-
-w_t, r_t, v_t, corr_full = sleeve_inputs(alloc, corr_sym, within)
+w_t, r_t, v_t, corr_full = sleeve_inputs(alloc)
 
 with st.spinner("Running simulation…"):
     res, repaired = run_sim(
@@ -540,10 +495,12 @@ with st.spinner("Running simulation…"):
         int(paths), int(years), int(seed))
 
 if repaired:
-    st.warning("The correlation matrix you entered was not internally consistent "
-               "(not positive semi-definite), so it was adjusted to the nearest "
-               "valid matrix before simulating. Results are usable, but check the "
-               "correlations you edited.")
+    # Should be unreachable: the published matrix is repaired once at import,
+    # and every principal sub-matrix of a positive semi-definite matrix is
+    # itself positive semi-definite. Kept as a guard, not an expected path.
+    st.warning("The correlation sub-matrix needed a numerical repair before "
+               "simulating. This should not happen with the published J.P. "
+               "Morgan matrix — worth reporting if you see it.")
 
 term = res.rows[-1]
 

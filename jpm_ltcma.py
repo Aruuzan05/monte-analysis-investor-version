@@ -1,8 +1,8 @@
 """
-J.P. Morgan 2026 Long-Term Capital Market Assumptions — asset line items.
+J.P. Morgan 2026 Long-Term Capital Market Assumptions — lines and correlations.
 
-Kept in its own module so the figures can be audited and updated (next year's
-LTCMA) without touching the UI or the simulation engine.
+Kept separate from the UI and the engine so the figures can be audited and
+swapped for next year's LTCMA without touching either.
 
 COLUMN CHOICE — read this before editing.
 The simulator takes a GEOMETRIC (compound) return: engine.py uses
@@ -15,11 +15,39 @@ The original workbook did exactly that for Private Equity (11.90 rather than
 
 `arith` and `compound25` are carried for reference and year-over-year context.
 They are not used by the simulation.
+
+CATEGORIES follow J.P. Morgan's own three: Fixed Income (21 lines),
+Equities (18) and Alternatives (19). Each category's dropdown offers exactly
+its own lines.
+
+THE LINE IS THE SLEEVE'S IDENTITY — read this before adding a "manual" escape.
+Every sleeve sits on a named LTCMA line, always. Picking a line fills Return
+and Vol from the compound column; overwriting either number keeps the line and
+keeps that override. The line is therefore two things at once: the sleeve's
+own return and volatility (until the user overrides them) AND the row of the
+published correlation matrix the sleeve uses. There is no separate "correlation
+proxy" to choose, because a sleeve can no longer become anonymous.
+
+Earlier builds had a "Manual entry" option that detached a row from every line
+and so needed a second, hand-picked column to say where its correlations came
+from. That column was the single input on the correlation path that was neither
+published nor derived, and it asked the user a question they could not answer
+from the numbers in front of them. Both are gone. Do not reintroduce a sleeve
+that has no line: it has no correlation row, and nothing can honestly supply one.
 """
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 FI, EQ, ALT = "FI", "EQ", "ALT"
 
-# (name, compound 2026, arithmetic 2026, annualized vol, compound 2025, family)
+CATEGORY_NAME = {FI: "Fixed Income", EQ: "Equities", ALT: "Alternatives"}
+CATEGORY_KEYS = [FI, EQ, ALT]
+
+# (name, compound 2026, arithmetic 2026, annualized vol, compound 2025, category)
+# Names must match jpm_correlations.csv exactly — a mismatch fails at import.
 LINES = [
     # ---- Fixed income (21) ------------------------------------------------
     ("U.S. Cash",                             3.10,  3.10,  0.67, 3.10, FI),
@@ -36,7 +64,7 @@ LINES = [
     ("U.S. Leveraged Loans",                  6.60,  6.88,  7.70, 6.60, FI),
     ("World Government Bonds hedged",         4.30,  4.38,  4.02, 3.90, FI),
     ("World Government Bonds",                4.30,  4.55,  7.27, 4.20, FI),
-    ("World ex-U.S. Govt Bonds hedged",       4.20,  4.27,  3.95, 3.80, FI),
+    ("World ex-U.S. Government Bonds hedged", 4.20,  4.27,  3.95, 3.80, FI),
     ("World ex-U.S. Government Bonds",        4.30,  4.69,  9.06, 4.20, FI),
     ("Emerging Markets Sovereign Debt",       6.30,  6.66,  8.83, 5.80, FI),
     ("Emerging Markets Local Currency Debt",  6.70,  7.38, 12.12, 6.10, FI),
@@ -85,28 +113,10 @@ LINES = [
 ]
 
 US_INFLATION = ("U.S. Inflation", 2.50, 2.52, 1.77, 2.40)
+INFLATION_ROW = "U.S. Inflation"     # in the matrix, but not an investable sleeve
 
-# name -> (compound, arith, vol, compound25, family)
+# name -> (compound, arith, vol, compound25, category)
 BY_NAME = {n: (c, a, v, c25, f) for n, c, a, v, c25, f in LINES}
-
-MANUAL = "Manual entry"
-
-# Which LTCMA lines each of the six general buckets may be set to. Curated
-# rather than "the whole family": the alternatives family mixes real assets,
-# private markets and hedge funds, and offering all 19 in every alternatives
-# row invites mismatches. Every row also gets MANUAL for hand-entered figures.
-_HEDGE_FUNDS = ["Diversified Hedge Funds", "Event Driven Hedge Funds",
-                "Long Bias Hedge Funds", "Relative Value Hedge Funds",
-                "Macro Hedge Funds"]
-_PRIVATE_MARKETS = ["Private Equity", "Venture Capital", "Direct Lending"]
-_REAL_ASSETS = ["Commodities", "Gold", "U.S. Core Real Estate",
-                "U.S. Value-Added Real Estate", "European Core Real Estate",
-                "Asia Pacific Core Real Estate", "U.S. REITs",
-                "Global Core Infrastructure", "Global Core Transport",
-                "Global Timberland", "Commercial Mortgage Loans"]
-_CASH_LIKE = ["U.S. Cash", "U.S. Short Duration Government/Credit",
-              "U.S. Intermediate Treasuries", "U.S. Muni 1-15 Yr Blend"]
-
 
 # The 14 lines flagged in the expansion proposal. Marked with a trailing star so
 # a proposal line is identifiable at a glance; the star is a SUFFIX so it never
@@ -118,120 +128,182 @@ EXPANSION = {
     "U.S. Core Real Estate", "Global Core Infrastructure", "Commodities",
     "Private Equity", "Venture Capital", "Direct Lending",
 }
-assert EXPANSION <= {n for n, *_ in LINES}, "expansion set names must exist in LINES"
+assert EXPANSION <= {n for n, *_ in LINES}, "expansion names must exist in LINES"
 
-# Each general asset type gets its OWN dropdown (its own Streamlit editor), so
-# the option list is already scoped to that type. That makes a family prefix on
-# the label redundant noise — "Diversified Hedge Funds" inside the Hedge Funds
-# table is unambiguous.
+# Each category gets its own dropdown, so the option list is already scoped and
+# a family prefix on the label would be redundant noise.
 LABEL = {n: n + (" ★" if n in EXPANSION else "") for n, *_ in LINES}
 NAME_OF = {v: k for k, v in LABEL.items()}
 
-
-def _family(fam):
-    return [LABEL[n] for n, *_, f in LINES if f == fam]
-
-
-CHOICES = {
-    "FI":   [MANUAL] + _family(FI),
-    "EQ":   [MANUAL] + _family(EQ),
-    "PE":   [MANUAL] + [LABEL[n] for n in _PRIVATE_MARKETS],
-    "HF":   [MANUAL] + [LABEL[n] for n in _HEDGE_FUNDS],
-    "CMD":  [MANUAL] + [LABEL[n] for n in _REAL_ASSETS],
-    "CASH": [MANUAL] + [LABEL[n] for n in _CASH_LIKE],
-}
+CHOICES = {k: [LABEL[n] for n, *_, c in LINES if c == k] for k in CATEGORY_KEYS}
 
 
 def lookup(label_or_name):
-    """(compound return, vol) for an LTCMA line. None for MANUAL / unknown.
+    """(compound return, vol) for a line, or None if the name is unknown.
 
-    Accepts the current dropdown label ("EQ - U.S. Large Cap ★"), the same
-    label without its star, or the bare line name ("U.S. Large Cap").
+    Accepts the dropdown label ("U.S. Large Cap ★"), the label without its
+    star, or an older family-prefixed spelling ("EQ - U.S. Large Cap").
     """
-    s = str(label_or_name).strip()
-    name = NAME_OF.get(s)
-    if name is None:
-        # Tolerate a label written by an earlier build: strip a trailing star
-        # and/or the family prefix, then fall back to the bare line name. A
-        # value stored in a live session must not stop resolving just because
-        # the label format changed.
-        s = s.removesuffix("★").strip()
-        name = NAME_OF.get(s)
-        if name is None:
-            name = s.split(" - ", 1)[1] if " - " in s else s
+    name = resolve(label_or_name)
     row = BY_NAME.get(name)
-    if row is None:
-        return None
-    return row[0], row[2]
+    return (row[0], row[2]) if row else None
 
 
-FAMILY_WORD = {FI: "fixed income", EQ: "equity", ALT: "alternatives"}
-
-# Long display name for each group heading, and the order they appear in.
-GROUP_KEYS = ["FI", "EQ", "PE", "HF", "CMD", "CASH"]
-
-
-def family_of(label_or_name):
-    """LTCMA family ('FI' / 'EQ' / 'ALT') for a line, or None for MANUAL."""
+def resolve(label_or_name):
+    """Bare LTCMA line name for any spelling we have ever used, else the input."""
     s = str(label_or_name).strip()
-    name = NAME_OF.get(s)
-    if name is None:
-        s = s.removesuffix("★").strip()
-        name = NAME_OF.get(s) or (s.split(" - ", 1)[1] if " - " in s else s)
-    row = BY_NAME.get(name)
+    if s in NAME_OF:
+        return NAME_OF[s]
+    s = s.removesuffix("★").strip()
+    if s in NAME_OF:
+        return NAME_OF[s]
+    if s in BY_NAME:
+        return s
+    if " - " in s:                      # legacy "EQ - Name" label
+        tail = s.split(" - ", 1)[1]
+        if tail in BY_NAME:
+            return tail
+    return s
+
+
+def category_of(label_or_name):
+    """'FI' / 'EQ' / 'ALT' for a line, or None if the name is unknown."""
+    row = BY_NAME.get(resolve(label_or_name))
     return row[4] if row else None
 
 
-def sync_group(prev, edited, group_key):
-    """Keep one asset type's sleeves consistent between label and figures.
+# --------------------------------------------------------------------------
+# Correlations — J.P. Morgan 2026 LTCMA, USD, as published
+# --------------------------------------------------------------------------
+# The CSV is the source of truth and is committed unmodified so it can be
+# diffed against the report. It arrives symmetric with a unit diagonal but is
+# NOT positive semi-definite: its smallest eigenvalue is about -0.0161, which
+# is normal for a published matrix rounded to two decimals, and is made worse
+# by U.S. Core Real Estate and U.S. Value-Added Real Estate sharing one
+# underlying series (identical rows -> a zero eigenvalue by construction).
+#
+# Cholesky needs a positive definite matrix, so the matrix is repaired ONCE at
+# import with Higham's nearest-correlation-matrix algorithm. The repair is
+# cosmetic: the largest single cell moves 0.0066 and no pair moves by as much
+# as 0.01. Repairing the whole matrix once — rather than each sub-matrix at
+# run time — also means every sub-matrix the app can build is automatically
+# valid, because every principal sub-matrix of a PSD matrix is itself PSD.
+_CSV = Path(__file__).with_name("jpm_correlations.csv")
 
-    Each general asset type is rendered as its own table, so the LTCMA dropdown
-    for that table already contains only that type's lines — there is no
-    cross-family pick to guard against, which is why this is simpler than the
-    single-table version it replaces.
+
+def _higham(A, iters=200, tol=1e-12):
+    """Nearest correlation matrix by alternating projections (Higham 2002)."""
+    Y = np.array(A, dtype=float)
+    dS = np.zeros_like(Y)
+    for _ in range(iters):
+        R = Y - dS
+        w, V = np.linalg.eigh((R + R.T) / 2.0)
+        X = (V * np.clip(w, 0.0, None)) @ V.T        # project onto PSD
+        dS = X - R
+        Y = X.copy()
+        np.fill_diagonal(Y, 1.0)                     # project onto unit diagonal
+        if np.linalg.eigvalsh(Y).min() > tol:
+            break
+    Y = (Y + Y.T) / 2.0
+    np.fill_diagonal(Y, 1.0)
+    return Y
+
+
+def _load_corr():
+    df = pd.read_csv(_CSV, index_col=0)
+    df.index = [str(i).strip() for i in df.index]
+    df.columns = [str(c).strip() for c in df.columns]
+    if list(df.index) != list(df.columns):
+        raise ValueError("jpm_correlations.csv: row and column order differ")
+    missing = [n for n, *_ in LINES if n not in df.index]
+    if missing:
+        raise ValueError(f"jpm_correlations.csv is missing lines: {missing}")
+    raw = df.to_numpy(dtype=float)
+    repaired = _higham(raw)
+    return (list(df.index), raw, repaired,
+            float(np.abs(repaired - raw).max()),
+            float(np.linalg.eigvalsh(raw).min()))
+
+
+CORR_NAMES, CORR_RAW, CORR, CORR_MAX_REPAIR, CORR_RAW_MIN_EIG = _load_corr()
+CORR_INDEX = {n: i for i, n in enumerate(CORR_NAMES)}
+
+
+def corr_for(lines):
+    """Sub-matrix of the published correlations for a list of LTCMA line names.
+
+    One line name per sleeve. Every sleeve sits on a line, so every sleeve has
+    a published correlation row and nothing here is assumed or borrowed.
+    """
+    idx = []
+    for p in lines:
+        name = resolve(p)
+        if name not in CORR_INDEX:
+            raise KeyError(f"no correlation row for {p!r}")
+        idx.append(CORR_INDEX[name])
+    return CORR[np.ix_(idx, idx)]
+
+
+# The line a newly added row starts on, per category. Deliberately the broadest
+# line in each: a new sleeve should begin somewhere unremarkable that the user
+# will immediately change, not on a niche line they might leave by accident.
+DEFAULT_LINE = {FI: "U.S. Aggregate Bonds",
+                EQ: "AC World Equity",
+                ALT: "Diversified Hedge Funds"}
+
+def sync_group(prev, edited, category_key):
+    """Keep one category's sleeves internally consistent.
+
+    Each category is rendered as its own table whose LTCMA dropdown holds only
+    that category's lines, so there is no cross-category pick to guard against.
 
     Rules:
-      1. A row the editor just added arrives with NaNs: default it to Manual
-         entry with a 0% weight, so it cannot silently poison the weight total.
-      2. Newly picking an LTCMA line fills Return and Vol from the compound
-         column.
-      3. Typing over Return or Vol while a line is selected flips the label to
-         Manual entry, so a sleeve never claims J.P. Morgan provenance for
-         figures that are no longer J.P. Morgan's.
-      4. Anything not in this group's option list falls back to Manual entry
-         (only reachable from stale session state after a catalogue change).
+      1. Every row must sit on a line in THIS category. A row the editor just
+         added arrives with NaNs, and stale session state can carry a line from
+         an older catalogue or the retired "Manual entry"; either way the row
+         falls back to the category's default line and is refilled from it.
+      2. Moving a row to a different line refills Return and Vol from the
+         compound column, discarding any previous override — picking a line is
+         how you ask for J.P. Morgan's numbers.
+      3. Typing over Return or Vol does NOT disturb the line. The sleeve keeps
+         your numbers and stays on its line, which is what supplies its row of
+         the correlation matrix.
+
+    Rule 2 compares positionally against `prev`, which is only sound while the
+    rows still line up. Deleting a row shifts every row below it up by one, so
+    on a shrinking frame rule 2 is skipped entirely — otherwise a delete would
+    silently reset the edits of every row underneath it.
 
     Returns (frame, dirty).
     """
-    allowed = set(CHOICES[group_key])
+    allowed = set(CHOICES[category_key])
+    default_line = LABEL[DEFAULT_LINE[category_key]]
+
     out = edited.copy().reset_index(drop=True)
+    deleted = len(out) < len(prev)
     dirty = False
 
     for i in range(len(out)):
         line = out.at[i, "LTCMA line"]
+        forced = False
         if not isinstance(line, str) or line not in allowed:
-            out.at[i, "LTCMA line"] = MANUAL
-            line = MANUAL
+            out.at[i, "LTCMA line"] = line = default_line       # rule 1
+            forced = dirty = True
+
+        was = prev.at[i, "LTCMA line"] if i < len(prev) else None
+        if forced or (not deleted and line != was):             # rule 2
+            out.at[i, "Return %"], out.at[i, "Vol %"] = lookup(line)
             dirty = True
+
         for col in ("Weight %", "Return %", "Vol %"):
             try:
                 v = float(out.at[i, col])
             except (TypeError, ValueError):
                 v = float("nan")
-            if v != v:                      # NaN
+            if v != v:                                          # NaN
                 out.at[i, col] = 0.0
                 dirty = True
-
-        was = prev.at[i, "LTCMA line"] if i < len(prev) else None
-        hit = lookup(line)
-        if line != was:
-            if hit is not None:
-                out.at[i, "Return %"], out.at[i, "Vol %"] = hit
-                dirty = True
-        elif hit is not None:
-            if (abs(float(out.at[i, "Return %"]) - hit[0]) > 1e-9
-                    or abs(float(out.at[i, "Vol %"]) - hit[1]) > 1e-9):
-                out.at[i, "LTCMA line"] = MANUAL
-                dirty = True
+            else:
+                out.at[i, col] = v
 
     return out, dirty

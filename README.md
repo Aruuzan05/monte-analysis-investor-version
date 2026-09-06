@@ -4,17 +4,20 @@ A Streamlit app for the target-allocation Monte Carlo. It runs in two modes:
 
 - **Base · JPM 2026 LTCMA** — every input locked to the figures behind the
   July 2027 deck. This is the read-only reference case.
-- **Custom** — weights, expected returns, volatilities and the full correlation
-  matrix are all editable. **Each of the six asset types gets its own table
-  and its own dropdown**, scoped to that type's LTCMA lines, and can hold any
-  number of sleeves.
+- **Custom** — weights, returns and volatilities are editable, and each of
+  **J.P. Morgan's three categories** (Fixed Income, Equities, Alternatives)
+  gets its own table and its own dropdown scoped to that category's LTCMA
+  lines. A category can hold any number of sleeves.
+
+Correlations are **not** editable and not assumed: they come from J.P. Morgan's
+published 59 × 59 matrix, shipped as `jpm_correlations.csv`.
 
 Either way the app returns the 3y/5y/10y percentile table and a wealth fan
 chart. Switching between modes keeps both sets of inputs: Base always shows the
 JPM figures, and Custom remembers your edits.
 
-Six asset classes: Fixed Income, Public Equities, Private Equity & VC,
-Diversified Hedge Funds, Commodities & Real Assets, Cash.
+Three categories, 58 LTCMA lines: Fixed Income (21), Equities (18),
+Alternatives (19).
 
 Built to run on a mainland-China host and load without a VPN.
 
@@ -204,9 +207,10 @@ security-group rule limiting inbound 8501 to your office range.
 | File | Purpose |
 |---|---|
 | `app.py` | Streamlit UI. No network calls — see the header comment. |
-| `engine.py` | The simulation plus `expand_correlation()`. Pure numpy, no Streamlit import, unit-testable. |
-| `jpm_ltcma.py` | The 58 LTCMA lines, the six per-type option lists, and the label/number sync rules. No Streamlit import. Update here for the 2027 LTCMA — and add any new line to a group, or the test will fail. |
-| `test_engine.py` | Reconciles Base against the workbook; also exercises a funded hedge fund sleeve and the non-PSD repair path. |
+| `engine.py` | The simulation. Pure numpy, no Streamlit import, unit-testable. |
+| `jpm_correlations.csv` | J.P. Morgan's published 59 × 59 USD correlation matrix, unmodified. The source of truth — diff it against the report. |
+| `jpm_ltcma.py` | The 58 LTCMA lines in three categories, the correlation loader and Higham repair, and the sleeve sync rules. No Streamlit import. Update here for the 2027 LTCMA — every line must appear in the CSV and in a category, or the tests fail. |
+| `test_engine.py` | 38 checks: workbook reconciliation, matrix integrity and repair size, sub-matrix PSD over 300 random draws, category coverage, and the sleeve sync rules. |
 | `requirements.txt` | Pinned. Verified to resolve and reproduce the workbook. |
 | `Dockerfile` | Mirrors are build args, so it works inside and outside China. |
 | `docker-compose.yml` | One-command deploy. |
@@ -224,14 +228,21 @@ python test_engine.py
 
 ## Base assumptions
 
-| Asset class | LTCMA line | Weight | Return | Vol |
+| LTCMA line | Weight | Return | Vol | |
 |---|---|---|---|---|
-| Fixed Income | *manual* — global IG blend | 45% | 5.00% | 7.02% |
-| Public Equities & Mutual Funds | *manual* — MSCI World 10y | 20% | 12.88% | 14.47% |
-| Private Equity & Venture Capital | Private Equity | 10% | 10.20% | 19.78% |
-| Diversified Hedge Funds | Diversified Hedge Funds | 0% | 5.30% | 5.75% |
-| Commodities & Real Assets | Commodities | 8% | 4.60% | 18.32% |
-| Cash & Equivalents | *manual* — 3M T-bill | 17% | 3.80% | 0.67% |
+| U.S. Inv Grade Corporate Bonds | 45% | 5.00% | 7.02% | *Keepp — global IG blend* |
+| U.S. Cash | 17% | 3.80% | 0.67% | *Keepp — 3M T-bill* |
+| AC World Equity | 20% | 12.88% | 14.47% | *Keepp — MSCI World 10y* |
+| Private Equity | 10% | 10.20% | 19.78% | J.P. Morgan |
+| Diversified Hedge Funds | 0% | 5.30% | 5.75% | J.P. Morgan |
+| Commodities | 8% | 4.60% | 18.32% | J.P. Morgan |
+
+Every sleeve sits on a named LTCMA line, and that line selects the sleeve's row
+of the published correlation matrix. Three sleeves carry Keepp's own return and
+volatility rather than J.P. Morgan's; they are filed under the line they most
+closely are. That last column is documentation, not part of the app — the table
+in the UI shows four columns and no provenance column; the three Keepp-sourced
+sleeves are named in a caption underneath it and in the sources panel.
 
 ### Compound vs arithmetic — the correction that matters
 
@@ -260,80 +271,102 @@ The hedge fund correlation row (EQ 0.75, PE 0.65, FI 0.35, CMD 0.35) is
 LTCMA-style convention, not a published J.P. Morgan matrix. It is flagged in
 the app's sources panel and is editable in Custom mode.
 
-### Multiple sleeves per asset type
+### Correlations — the published matrix
 
-The allocation table is a flat list of sleeves. Every row carries the general
-asset type it belongs to plus its own LTCMA line, weight, return and volatility,
-so Public Equities can be 12% U.S. Large Cap + 8% Emerging Markets Equity while
-still reading as one 20% equity allocation. The **+** button on a type's table
-adds a sleeve to that type; selecting a row and pressing delete removes it.
-Each type's heading carries its own subtotal and sleeve count.
+`jpm_correlations.csv` is J.P. Morgan's 2026 LTCMA USD correlation matrix,
+59 × 59 (the 58 investable lines plus U.S. Inflation), committed **unmodified**
+so it can be diffed against the report. The matrix used in any run is a
+sub-matrix of it, selected by each sleeve's correlation row. Nothing is
+assumed anywhere in the correlation path.
 
-The general six types stay exactly as they were — they are now the
-**correlation grouping** rather than the unit of allocation.
+This replaced a fabricated 6 × 6 plus six guessed within-type numbers. Of the
+21 correlation inputs that structure needed, exactly one had been estimated
+from data; the rest were convention or judgment. All of it is gone, along with
+`engine.expand_correlation()` and the two editable correlation tables — about
+80 lines deleted.
 
-#### The correlation assumption this forces
+**One numerical note.** As published the matrix is symmetric with a unit
+diagonal, but it is *not* positive semi-definite: its smallest eigenvalue is
+−0.0161. That is normal for figures rounded to two decimals, and is compounded
+by U.S. Core Real Estate and U.S. Value-Added Real Estate sharing one
+underlying series — identical rows force a zero eigenvalue. Cholesky needs
+positive definiteness, so the matrix is repaired once at import with Higham's
+nearest-correlation-matrix algorithm.
 
-Two sleeves inside one asset type need a correlation between them, and
-J.P. Morgan publishes no line-level matrix. So the sleeve-level matrix is built
-at runtime from two editable inputs:
+The repair is cosmetic and the test suite asserts it:
 
-* sleeves in **different** types take the published between-type figure;
-* sleeves in the **same** type take that type's *within-type correlation*.
-
-Defaults, all editable under **Correlations** in the sidebar:
-
-| Asset type | Within-type |
+| | |
 |---|---|
-| Fixed Income | 0.85 |
-| Public Equities | 0.85 |
-| Private Equity | 0.75 |
-| Hedge Funds | 0.80 |
-| Commodities & Real Assets | 0.45 |
-| Cash | 0.90 |
+| Largest single cell moved | **0.0066** (U.S. Large Cap ↔ AC World Equity, 0.97 → 0.9634) |
+| Pairs moving 0.01 or more | **0 of 1,711** |
+| Min eigenvalue after | −3.3 × 10⁻¹⁵ (numerically zero) |
 
-Real assets get a much lower figure on purpose: commodities, real estate and
-infrastructure genuinely do not move together, and a single high number there
-would understate the diversification.
+Repairing the whole matrix once, rather than each sub-matrix at run time, also
+means **every sub-matrix the app can build is automatically valid** — every
+principal sub-matrix of a PSD matrix is itself PSD. The test suite draws 300
+random sub-matrices and confirms none is negative. The repair warning in the
+UI is now a guard, not an expected path.
 
-This is a real simplification and worth stating to a reader. Within fixed
-income especially, long Treasuries and high yield are nothing like 0.85
-correlated — if a split matters to a decision, set that number deliberately
-rather than accepting the default.
+### The line is the sleeve's identity
 
-`engine.expand_correlation()` does the expansion and is unit-tested: one sleeve
-per type reproduces the 6×6 matrix exactly, and splitting a sleeve in two with
-within-correlation 1.0 reproduces the unsplit portfolio's return and volatility
-to machine precision.
+**There is nothing to choose on the correlation path.** A sleeve's LTCMA line
+does two jobs at once: it supplies Return and Vol, and it selects the sleeve's
+row of the published matrix. Overwrite either number and the sleeve keeps your
+figure and stays on its line.
 
-### The six groups
+| Sleeve | Return / Vol | Filed under |
+|---|---|---|
+| Global IG blend | 5.00 / 7.02 | U.S. Inv Grade Corporate Bonds |
+| MSCI World 10y | 12.88 / 14.47 | AC World Equity |
+| 3M U.S. T-bill | 3.80 / 0.67 | U.S. Cash |
 
-The 58 LTCMA lines are divided across the six general asset types. Each type is
-rendered as its own table, so its dropdown only ever offers its own lines — the
-Hedge Funds table lists the five hedge fund strategies and nothing else.
+An earlier build made these three anonymous "Manual entry" rows, which detached
+them from every line and so required a second, hand-picked **Correlation proxy**
+column — the one input on the correlation path that was neither published nor
+derived, and one a portfolio manager could not answer from the numbers in front
+of them. Both are gone. Filing a sleeve under a line answers the question once,
+at the point where the user is already naming the asset.
 
-| Asset type | Lines offered |
-|---|---|
-| Fixed Income | all 21 fixed income lines |
-| Public Equities | all 18 equity lines |
-| Private Equity | Private Equity, Venture Capital, Direct Lending |
-| Hedge Funds | Diversified, Event Driven, Long Bias, Relative Value, Macro |
-| Commodities & Real Assets | Commodities, Gold, the four real estate lines, REITs, Infrastructure, Transport, Timberland, Commercial Mortgage Loans |
-| Cash | U.S. Cash, Short Duration Gov/Credit, Intermediate Treasuries, Muni 1–15yr |
+The correlation rows are unchanged by the switch: the three proxies were exactly
+these three lines, so Base's return, volatility and percentiles are identical to
+the previous build.
 
-Every one of the 58 lines is reachable from at least one group — asserted in
-`test_engine.py`, so adding a line to the catalogue without grouping it fails
-the test rather than going silently missing. The four short-dated fixed income
-lines appear in both Fixed Income and Cash on purpose: a cash sleeve can
-legitimately hold short-duration government credit.
+**Two alternatives that were tried and rejected.** Defaulting each hand-entered
+sleeve to its category's broadest line (Fixed Income → U.S. Aggregate Bonds) is
+simpler but turns the T-bill sleeve into a bond: portfolio volatility falls
+7.58% → 6.94% and P(loss) 0.18% → 0.04%, a silent understatement of risk.
+Inferring the line from the return and volatility typed in works for the IG
+blend and the T-bill but matches MSCI World realised history to **Japanese
+Equity** — the only line JPM forecasts high enough to be near 12.88% — under
+every weighting of the two figures. Return and volatility do not identify an
+asset.
 
-**Why one table per type rather than one table with a filtered dropdown.**
-Streamlit's `SelectboxColumn` carries a single option list for the whole
-column, not one per row, so a single shared table physically cannot scope the
-list to each row's asset type. Splitting into six editors makes the scoping
-structural instead of something enforced after the fact — which also removed
-the cross-family guard, its warning messages and the family prefixes on the
-labels that the previous build needed.
+### What the real matrix changed
+
+Same weights, returns and volatilities — only the correlations:
+
+| Pair | Fabricated | JPM published |
+|---|---|---|
+| Fixed Income × Equities | 0.68 | **0.56** |
+| Equities × Commodities | 0.30 | **0.50** |
+| Private Equity × Hedge Funds | 0.65 | **0.76** |
+| Equities × Private Equity | 0.80 | 0.81 |
+
+Net effect on the base case: expected return **unchanged at 7.51%** (correlations
+do not enter the return), portfolio volatility **7.40% → 7.58%**, 10-year P(loss)
+**0.12% → 0.17%**, 5th-percentile wealth 1.359× → 1.340×. The workbook's
+equity–bond figure was too high and its equity–commodity figure much too low;
+they partly offset.
+
+### Multiple sleeves per category
+
+The allocation table is a flat list of sleeves grouped into the three
+categories. Equities can be 12% U.S. Large Cap + 8% Emerging Markets Equity
+while still reading as one 20% equity allocation, and the correlation between
+those two sleeves is now J.P. Morgan's published 0.73 rather than a guess. The
+**+** button on a category's table adds a sleeve; selecting a row and pressing
+delete removes it. Each category heading carries its own subtotal, sleeve count
+and the number of LTCMA lines available.
 
 ### Sub-category dropdowns
 
@@ -342,20 +375,29 @@ In Custom mode each bucket can be set to any LTCMA line from its own family —
 hedge funds and real assets. Type in the cell to filter. Picking a line fills
 Return and Vol from the compound column.
 
-Three rules keep the label honest about the numbers:
+Four rules govern the table:
 
-1. Picking a line overwrites Return and Vol from the catalogue.
-2. Editing Return or Vol by hand flips the label to *Manual entry*, so a sleeve
-   never claims J.P. Morgan provenance for figures that are no longer theirs.
-3. A row added by the editor arrives blank; it defaults to Manual entry with a
-   0% weight, so it cannot silently poison the weight total.
-4. A stored line that is not in its group's list — only reachable from stale
-   session state after the catalogue changes — falls back to Manual entry
-   rather than sticking.
+1. Picking a different line overwrites Return and Vol from the catalogue,
+   discarding any previous override — picking a line is how you ask for J.P.
+   Morgan's figures.
+2. Editing Return or Vol does **not** disturb the line. The sleeve keeps your
+   numbers and stays on its line, which is what supplies its correlation row.
+   The line is a filing decision, not a claim that the figures beside it are
+   J.P. Morgan's — pick a line again (rule 1) to pull their numbers back.
+3. A row added by the editor arrives blank; it lands on the category's default
+   line at a 0% weight with that line's published figures, so it can neither
+   poison the weight total nor sit there without a correlation row.
+4. A stored line that is not in its group's list — reachable from stale session
+   state after a catalogue change, or from a saved "Manual entry" row predating
+   this design — falls back to the category default rather than sticking.
 
-Swapping a line does not change its correlation row — that follows the asset
-type, not the line. Adjust the type matrix or the within-type figure by hand if
-a swap materially changes a sleeve's character.
+Rule 1 compares row positions against the previous render, which only holds
+while the rows line up. Deleting a row shifts everything below it up by one, so
+on a shrinking table rule 1 is skipped entirely; otherwise a delete would
+silently reset the edits of every sleeve underneath it.
+
+Swapping a line **does** change the sleeve's correlation row, because the line
+is the row. Nothing else needs adjusting.
 
 **Worth knowing before a demo:** every forward-looking JPM equity line sits
 5–6pp below the 12.88% realised MSCI World figure, with higher volatility.
