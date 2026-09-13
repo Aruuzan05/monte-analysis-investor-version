@@ -17,7 +17,12 @@ import pandas as pd
 import streamlit as st
 
 import jpm_ltcma as jpm
+import optimizer as opt
 from engine import simulate
+
+# The line the cash floor applies to. Named once so the optimizer panel and the
+# risk-free default cannot drift apart from each other.
+CASH_LINE = "U.S. Cash"
 
 # --------------------------------------------------------------------------
 # Page config + palette
@@ -287,9 +292,18 @@ def sleeve_inputs(alloc: pd.DataFrame):
     selected by each sleeve's LTCMA line. Nothing is assumed and nothing is
     borrowed — the numbers come straight from the CSV (repaired once at import).
     """
-    corr = jpm.corr_for(list(alloc["LTCMA line"]))
+    corr = corr_of(alloc)
     return (tuple(alloc["Weight %"]), tuple(alloc["Return %"]),
             tuple(alloc["Vol %"]), corr)
+
+
+def corr_of(alloc: pd.DataFrame):
+    """The published correlation sub-matrix for this allocation's lines.
+
+    Shared by the simulation and the optimizer, so the two cannot end up
+    disagreeing about how the sleeves move together.
+    """
+    return jpm.corr_for(list(alloc["LTCMA line"]))
 
 
 def bump_editors():
@@ -527,6 +541,375 @@ if off:
              f"simulation can run. Adjust a weight in the table above, or use "
              f"Normalize to scale them all proportionally.")
     st.stop()
+
+# --------------------------------------------------------------------------
+# Optimizer — the reverse question
+#
+# The rest of the app answers "what does this allocation produce?". This
+# section answers "what is the best achievable return-and-volatility pair, and
+# which weights get there?" — a mean-variance optimization over the SAME lines,
+# returns, volatilities and published correlation sub-matrix the simulation
+# uses, so the two can never disagree about the current portfolio.
+#
+# Shown in BOTH modes. Base allows weight edits and nothing else, and the
+# optimizer's decision variables are exactly weights, so it fits Base without
+# violating anything: the returns and volatilities it optimizes against are the
+# locked J.P. Morgan figures. In Custom it optimizes against whatever the PM
+# has typed. All numeric work lives in optimizer.py; this block is UI only.
+# --------------------------------------------------------------------------
+st.markdown("## Optimizer")
+st.caption(
+    "The reverse question: given the return and volatility assumptions above, "
+    "what is the best achievable return-and-volatility pair, and which weights "
+    "get there? Decision variables are the individual LTCMA line weights — "
+    "long-only, summing to 100%, subject to a cash floor and per-category bands.")
+
+OBJ_SHARPE = "Maximum Sharpe ratio"
+OBJ_MINVOL = "Minimum volatility for a target return"
+OBJ_MAXRET = "Maximum return for a volatility budget"
+OBJ_GROWTH = "Maximum long-run growth"
+
+opt_lines = [jpm.resolve(x) for x in alloc["LTCMA line"]]
+opt_cats = list(alloc["Category"])
+n_lines = len(opt_lines)
+cash_pos = [i for i, nm in enumerate(opt_lines) if nm == CASH_LINE]
+
+# arithmetic mu, per optimizer.py's single conversion point
+opt_mu, opt_vols = opt.inputs_from_percent(alloc["Return %"], alloc["Vol %"])
+opt_cov = opt.covariance(opt_vols, jpm.corr_for(alloc["LTCMA line"]))
+cur_w = np.asarray(alloc["Weight %"], dtype=float) / 100.0
+
+groups = {}
+for i, cat in enumerate(opt_cats):
+    groups.setdefault(cat, []).append(i)
+groups = {k: np.array(v) for k, v in groups.items()}
+cur_cat_pct = {k: float(cur_w[i].sum()) * 100.0 for k, i in groups.items()}
+
+if n_lines < 2:
+    st.info("Add a second sleeve to optimize — with one line there is nothing "
+            "to allocate between.")
+else:
+    with st.expander("Objective and constraints", expanded=False):
+        oc1, oc2 = st.columns([1.35, 1])
+        with oc1:
+            objective = st.radio(
+                "Objective", [OBJ_SHARPE, OBJ_GROWTH, OBJ_MINVOL, OBJ_MAXRET],
+                key="opt_objective",
+                help="Sharpe maximises return per unit of risk above the "
+                     "risk-free rate. Long-run growth maximises the MEDIAN "
+                     "wealth this app's fan chart plots, which is a different "
+                     "portfolio — it charges for the variance drag Sharpe "
+                     "ignores.")
+            cur_r_pct, cur_v_pct = [x * 100 for x in
+                                    opt.portfolio(cur_w, opt_mu, opt_cov)]
+            if objective == OBJ_MINVOL:
+                target_pct = st.number_input(
+                    "Target return %", value=round(cur_r_pct + 0.5, 2),
+                    min_value=-20.0, max_value=60.0, step=0.05, format="%.2f")
+            elif objective == OBJ_MAXRET:
+                budget_pct = st.number_input(
+                    "Volatility budget %", value=round(cur_v_pct, 2),
+                    min_value=0.01, max_value=100.0, step=0.05, format="%.2f")
+        with oc2:
+            rf_default = (float(alloc["Return %"].iloc[cash_pos[0]])
+                          if cash_pos else 3.80)
+            rf_pct = st.number_input(
+                "Risk-free rate %", value=round(rf_default, 2),
+                min_value=0.0, max_value=20.0, step=0.05, format="%.2f",
+                help="Defaults to this allocation's own U.S. Cash return, so "
+                     "the tangency point stays consistent with your inputs.")
+            floor_pct = st.number_input(
+                "Cash floor %", value=5.00, min_value=0.0, max_value=100.0,
+                step=0.5, format="%.2f",
+                disabled=not cash_pos,
+                help=("Minimum weight on the U.S. Cash line."
+                      if cash_pos else
+                      "No U.S. Cash line in this allocation, so there is "
+                      "nothing to floor. Add one to enable this."))
+            cap_pct = st.number_input(
+                "Max weight per line %", value=100.00, min_value=0.01,
+                max_value=100.0, step=1.0, format="%.2f",
+                help="A cap on any single line. Leave at 100% for no cap. "
+                     "Lowering it is the bluntest way to stop the optimizer "
+                     "concentrating everything in one asset.")
+
+        st.markdown(
+            f'<div style="font-weight:600;font-size:.85rem;margin:.7rem 0 .1rem">'
+            f'Category bands</div>'
+            f'<div style="color:{INK_3};font-size:.78rem;margin-bottom:.35rem">'
+            f'Minimum and maximum total weight per J.P. Morgan category. '
+            f'Defaults are the current totals ±10pp.</div>',
+            unsafe_allow_html=True)
+        band_seed = pd.DataFrame([
+            {"Category": k,
+             "Min %": round(max(0.0, cur_cat_pct[k] - 10.0), 2),
+             "Max %": round(min(100.0, cur_cat_pct[k] + 10.0), 2)}
+            for k in groups])
+        bands_df = st.data_editor(
+            band_seed, key=f"opt_bands_{NONCE}", hide_index=True,
+            width='stretch', num_rows="fixed", disabled=["Category"],
+            column_config={
+                "Category": st.column_config.TextColumn(width="medium"),
+                "Min %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
+                "Max %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
+            })
+        show_stability = st.checkbox(
+            "Also run a stability check (slower, ~10s)", value=False,
+            help="Re-solves the optimum 40 times with every expected return "
+                 "nudged by random noise, and reports how far each line's "
+                 "optimal weight moves. The single most useful sanity check "
+                 "on any mean-variance answer.")
+
+    run_opt = st.button("Run optimization", type="primary")
+
+    # ----------------------------------------------------------------------
+    # Solve. Never on a keystroke — the frontier is 60 quadratic programs and
+    # the PM is usually mid-typing. Only on an explicit click.
+    # ----------------------------------------------------------------------
+    if run_opt:
+        lower = np.zeros(n_lines)
+        upper = np.full(n_lines, cap_pct / 100.0)
+        if cash_pos:
+            lower[cash_pos[0]] = floor_pct / 100.0
+            upper[cash_pos[0]] = max(upper[cash_pos[0]], floor_pct / 100.0)
+        band_map = {r["Category"]: (float(r["Min %"]) / 100.0,
+                                    float(r["Max %"]) / 100.0)
+                    for _, r in bands_df.iterrows()}
+        limits = opt.Limits(lower, upper, groups,
+                            {k: band_map.get(k, (0.0, 1.0)) for k in groups})
+        try:
+            with st.spinner("Solving…"):
+                w0 = opt.feasible_start(limits)          # raises Infeasible
+                frontier = opt.efficient_frontier(opt_mu, opt_cov, limits, w0, 60)
+                rf = rf_pct / 100.0
+                if objective == OBJ_SHARPE:
+                    w_opt, _, _, _ = opt.max_sharpe(opt_mu, opt_cov, limits, w0, rf)
+                    note = None
+                elif objective == OBJ_GROWTH:
+                    r_ = opt.max_growth(opt_mu, opt_cov, limits, w0)
+                    w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                elif objective == OBJ_MINVOL:
+                    r_ = opt.min_variance(opt_mu, opt_cov, limits, w0,
+                                          target_return=target_pct / 100.0)
+                    w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                else:
+                    r_ = opt.max_return(opt_mu, opt_cov, limits, w0,
+                                        vol_budget=budget_pct / 100.0)
+                    w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                w_opt = np.clip(np.asarray(w_opt, dtype=float),
+                                limits.lower, limits.upper)
+                w_opt = w_opt / w_opt.sum()
+                band = opt.stability(opt_mu, opt_cov, limits, rf) \
+                    if show_stability else (None, None)
+            st.session_state.opt_result = {
+                "lines": opt_lines, "cats": opt_cats, "w": w_opt,
+                "frontier": frontier, "rf": rf, "objective": objective,
+                "note": note, "stability": band,
+                "cur_w": cur_w.copy(), "mode": mode,
+            }
+        except opt.Infeasible as e:
+            st.session_state.pop("opt_result", None)
+            st.error(f"**These constraints cannot all be satisfied.** {e}")
+        except Exception as e:                            # solver blew up
+            st.session_state.pop("opt_result", None)
+            st.error(f"**The optimizer could not solve this.** {type(e).__name__}: {e}")
+
+    # ----------------------------------------------------------------------
+    # Results
+    # ----------------------------------------------------------------------
+    R = st.session_state.get("opt_result")
+    if R and R["lines"] == opt_lines:
+        w_opt = R["w"]
+        rf = R["rf"]
+        if R.get("note"):
+            st.warning(f"The solver did not fully converge — showing the best "
+                       f"feasible point it reached, not a proven optimum. "
+                       f"({R['note']})")
+
+        r_opt, v_opt = opt.portfolio(w_opt, opt_mu, opt_cov)
+        r_cur, v_cur = opt.portfolio(cur_w, opt_mu, opt_cov)
+        sh_opt = opt.sharpe(w_opt, opt_mu, opt_cov, rf)
+        sh_cur = opt.sharpe(cur_w, opt_mu, opt_cov, rf)
+
+        c1, c2 = st.columns(2)
+        c1.markdown(
+            f'<div class="statcard"><div class="statk">Optimal expected return</div>'
+            f'<div class="statv">{r_opt*100:.2f}%</div>'
+            f'<div class="statn">Arithmetic, per annum &nbsp;·&nbsp; '
+            f'{r_opt*100 - r_cur*100:+.2f}pp vs today</div></div>',
+            unsafe_allow_html=True)
+        c2.markdown(
+            f'<div class="statcard"><div class="statk">Optimal volatility</div>'
+            f'<div class="statv">{v_opt*100:.2f}%</div>'
+            f'<div class="statn">Sharpe {sh_opt:.2f} vs {sh_cur:.2f} today</div>'
+            f'</div>', unsafe_allow_html=True)
+        st.write("")
+
+        # ---- frontier chart ------------------------------------------------
+        f_r, f_v, _ = R["frontier"]
+        fdf = pd.DataFrame({"vol": f_v * 100, "ret": f_r * 100})
+        pts = pd.DataFrame([
+            {"vol": v_cur * 100, "ret": r_cur * 100, "what": "Current",
+             "sharpe": sh_cur},
+            {"vol": v_opt * 100, "ret": r_opt * 100, "what": "Optimal",
+             "sharpe": sh_opt}])
+        assets = pd.DataFrame({
+            "vol": opt_vols * 100, "ret": opt_mu * 100,
+            "what": [jpm.LABEL.get(x, x) for x in opt_lines]})
+
+        def _axis(title):
+            return alt.Axis(title=title, labelFont="monospace", labelColor=INK_3,
+                            titleColor=INK_3, gridColor=GRID, labelFontSize=11,
+                            format=".1f")
+
+        x_enc = alt.X("vol:Q", axis=_axis("Volatility % p.a."),
+                      scale=alt.Scale(zero=False, nice=True))
+        y_enc = alt.Y("ret:Q", axis=_axis("Expected return % p.a."),
+                      scale=alt.Scale(zero=False, nice=True))
+
+        layers = [
+            alt.Chart(assets).mark_point(size=42, color=INK_3, opacity=.5,
+                                         filled=True).encode(
+                x=x_enc, y=y_enc,
+                tooltip=[alt.Tooltip("what:N", title="Line"),
+                         alt.Tooltip("ret:Q", format=".2f", title="Return %"),
+                         alt.Tooltip("vol:Q", format=".2f", title="Vol %")]),
+            alt.Chart(fdf).mark_line(color=ACCENT, strokeWidth=2.2).encode(
+                x=x_enc, y=y_enc),
+        ]
+        # capital market line, from (0, rf) through the tangency point
+        if R["objective"] == OBJ_SHARPE and v_opt > 0:
+            v_max = float(max(f_v.max(), v_cur, opt_vols.max())) * 100
+            cml = pd.DataFrame({"vol": [0.0, v_max],
+                                "ret": [rf * 100, rf * 100 + sh_opt * v_max]})
+            layers.append(alt.Chart(cml).mark_line(
+                color=ACCENT, strokeDash=[4, 4], strokeWidth=1,
+                opacity=.65).encode(x=x_enc, y=y_enc))
+        layers.append(
+            alt.Chart(pts).mark_point(size=190, filled=True, opacity=1).encode(
+                x=x_enc, y=y_enc,
+                color=alt.Color("what:N", scale=alt.Scale(
+                    domain=["Current", "Optimal"], range=[BRICK, ACCENT]),
+                    legend=alt.Legend(title=None, orient="top-left")),
+                shape=alt.Shape("what:N", scale=alt.Scale(
+                    domain=["Current", "Optimal"], range=["circle", "diamond"]),
+                    legend=None),
+                tooltip=[alt.Tooltip("what:N", title=""),
+                         alt.Tooltip("ret:Q", format=".2f", title="Return %"),
+                         alt.Tooltip("vol:Q", format=".2f", title="Vol %"),
+                         alt.Tooltip("sharpe:Q", format=".3f", title="Sharpe")]))
+
+        chart = alt.layer(*layers).properties(height=330).configure_view(
+            strokeWidth=0).configure_axis(labelFont="monospace", titleFontSize=11)
+        st.altair_chart(chart, width='stretch')
+        st.caption("Grey dots are the individual LTCMA lines. The line is the "
+                   "efficient frontier under your constraints; the dashed line "
+                   "is the capital market line through the optimum.")
+
+        # ---- caveat, in the app and not only in the code -------------------
+        st.markdown(
+            f'<div style="border-left:3px solid {BRICK};background:#FBF3EF;'
+            f'padding:11px 14px;border-radius:4px;font-size:.82rem;'
+            f'line-height:1.6;margin:.5rem 0 1rem">'
+            f'<b>Read the frontier as a diagnostic, not a target allocation.</b> '
+            f'Mean-variance solutions are highly sensitive to the return '
+            f'assumptions typed above: a 50bp change in one line\'s expected '
+            f'return can move its optimal weight by tens of percentage points. '
+            f'Correlations here are static — they do not rise in a crisis — so '
+            f'the left tail of every portfolio on this chart, including the '
+            f'optimal one, is likely flattered.</div>',
+            unsafe_allow_html=True)
+
+        # ---- weights table -------------------------------------------------
+        p25, p75 = R.get("stability", (None, None))
+        rows = []
+        for i, nm in enumerate(opt_lines):
+            row = {"Category": opt_cats[i],
+                   "LTCMA line": jpm.LABEL.get(nm, nm),
+                   "Current %": cur_w[i] * 100,
+                   "Optimal %": w_opt[i] * 100,
+                   "Change (pp)": (w_opt[i] - cur_w[i]) * 100}
+            if p25 is not None:
+                row["Stable range %"] = f"{p25[i]*100:.0f} – {p75[i]*100:.0f}"
+            rows.append(row)
+        wdf = pd.DataFrame(rows).reindex(
+            pd.DataFrame(rows)["Change (pp)"].abs()
+            .sort_values(ascending=False).index).reset_index(drop=True)
+
+        sub = []
+        for k, idx in groups.items():
+            r_ = {"Category": k, "LTCMA line": "— category total —",
+                  "Current %": cur_w[idx].sum() * 100,
+                  "Optimal %": w_opt[idx].sum() * 100,
+                  "Change (pp)": (w_opt[idx].sum() - cur_w[idx].sum()) * 100}
+            if p25 is not None:
+                r_["Stable range %"] = ""
+            sub.append(r_)
+        wdf = pd.concat([wdf, pd.DataFrame(sub)], ignore_index=True)
+
+        st.dataframe(
+            wdf, hide_index=True, width='stretch',
+            column_config={
+                "Category": st.column_config.TextColumn(width="small"),
+                "LTCMA line": st.column_config.TextColumn(width="medium"),
+                "Current %": st.column_config.NumberColumn(format="%.2f"),
+                "Optimal %": st.column_config.NumberColumn(format="%.2f"),
+                "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
+                "Stable range %": st.column_config.TextColumn(
+                    width="small",
+                    help="Interquartile range of this line's optimal weight "
+                         "across 40 re-solves with expected returns perturbed "
+                         "by N(0, 0.5%). A wide range is not a recommendation."),
+            })
+        if p25 is not None:
+            widest = int(np.argmax(p75 - p25))
+            st.caption(
+                f"**Stability:** across 40 re-solves with each expected return "
+                f"nudged by random noise of 0.5%, the least stable line is "
+                f"**{jpm.LABEL.get(opt_lines[widest], opt_lines[widest])}**, "
+                f"whose optimal weight ranges "
+                f"{p25[widest]*100:.0f}–{p75[widest]*100:.0f}%. Lines with a "
+                f"wide range are an artefact of the return estimates, not a "
+                f"recommendation.")
+
+        # ---- apply + before/after ------------------------------------------
+        ac1, ac2 = st.columns([1, 3])
+        if ac1.button("Apply optimal weights", width='stretch'):
+            new_pct = [round(float(x) * 100, 4) for x in w_opt]
+            if is_base:
+                st.session_state.base_weights = new_pct
+            else:
+                ca = st.session_state.custom_alloc.copy()
+                ca["Weight %"] = new_pct
+                st.session_state.custom_alloc = ca
+            # MUST bump: st.data_editor keeps the user's edits as a delta and
+            # re-applies them on top of whatever dataframe it is handed, so a
+            # hand-edited weight cell would snap back over the optimal value.
+            # This is the same failure that once made Normalize produce 94.71%.
+            bump_editors()
+            st.rerun()
+
+        before = run_sim(tuple(alloc["Weight %"]), tuple(alloc["Return %"]),
+                         tuple(alloc["Vol %"]), tuple(corr_of(alloc).flatten()),
+                         int(paths), int(years), int(seed))[0]
+        after = run_sim(tuple(float(x) * 100 for x in w_opt),
+                        tuple(alloc["Return %"]), tuple(alloc["Vol %"]),
+                        tuple(corr_of(alloc).flatten()),
+                        int(paths), int(years), int(seed))[0]
+        b_t, a_t = before.rows[-1], after.rows[-1]
+        ac2.markdown(
+            f'<div style="font-size:.82rem;line-height:1.75;padding-top:.35rem">'
+            f'<b>If applied</b>, over {years} years: median wealth '
+            f'<b>{b_t["Median x"]:.2f}× → {a_t["Median x"]:.2f}×</b>, '
+            f'P(loss) <b>{b_t["P(loss)"]*100:.2f}% → {a_t["P(loss)"]*100:.2f}%</b>. '
+            f'<span style="color:{INK_3}">Simulated, not analytic — the same '
+            f'Monte Carlo as the rest of the page.</span></div>',
+            unsafe_allow_html=True)
+    elif R:
+        st.info("The allocation changed since the last run. Press "
+                "**Run optimization** again.")
 
 # --------------------------------------------------------------------------
 # Run

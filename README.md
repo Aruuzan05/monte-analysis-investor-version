@@ -216,7 +216,9 @@ security-group rule limiting inbound 8501 to your office range.
 | `engine.py` | The simulation. Pure numpy, no Streamlit import, unit-testable. |
 | `jpm_correlations.csv` | J.P. Morgan's published 59 × 59 USD correlation matrix, unmodified. The source of truth — diff it against the report. |
 | `jpm_ltcma.py` | The 58 LTCMA lines in three categories, the correlation loader and Higham repair, and the sleeve sync rules. No Streamlit import. Update here for the 2027 LTCMA — every line must appear in the CSV and in a category, or the tests fail. |
-| `test_engine.py` | 38 checks: workbook reconciliation, matrix integrity and repair size, sub-matrix PSD over 300 random draws, category coverage, and the sleeve sync rules. |
+| `optimizer.py` | Mean-variance optimization over the allocation lines. Pure numpy/scipy, no Streamlit import. |
+| `test_engine.py` | 54 checks: workbook reconciliation, matrix integrity and repair size, sub-matrix PSD over 300 random draws, category coverage, and the sleeve sync rules. |
+| `test_optimizer.py` | 42 checks: the closed-form tangency match, the two-asset analytic minimum-variance weight, frontier monotonicity, reconciliation against the stat cards, and named errors on infeasible constraints. |
 | `requirements.txt` | Pinned. Verified to resolve and reproduce the workbook. |
 | `Dockerfile` | Mirrors are build args, so it works inside and outside China. |
 | `docker-compose.yml` | One-command deploy. |
@@ -224,10 +226,11 @@ security-group rule limiting inbound 8501 to your office range.
 | `.streamlit/config.toml` | Theme, telemetry off, XSRF on. Committed. |
 | `.gitignore` | Keeps the virtualenv, caches and `secrets.toml` out of git. |
 
-Run the reconciliation any time you change the engine:
+Run the reconciliation any time you change the engine or the optimizer:
 
 ```bash
 python test_engine.py
+python test_optimizer.py
 ```
 
 ---
@@ -416,6 +419,108 @@ model.
 
 The 6x6 correlation matrix is verified positive semi-definite (minimum
 eigenvalue 0.067), so it factorises without repair.
+
+---
+
+## Optimizer — the reverse question
+
+The simulation answers *"what does this allocation produce?"*. The Optimizer
+section answers the reverse: **given these return and volatility assumptions,
+what is the best achievable return-and-volatility pair, and which weights get
+there?**
+
+**Decision variables are the individual LTCMA line weights**, not category
+totals. Constraints: long-only, summing to 100%, a cash floor on the `U.S. Cash`
+line, a per-line cap, and min/max bands on each J.P. Morgan category. Defaults
+are a 5% cash floor, no per-line cap, and category bands at the current totals
+±10pp.
+
+Four objectives:
+
+| Objective | Solves |
+|---|---|
+| Maximum Sharpe ratio | the tangency portfolio — best return per unit of risk above `r_f` |
+| Maximum long-run growth | `max wᵀμ − ½wᵀΣw` — the highest **median** wealth, which is what the fan chart plots |
+| Minimum volatility for a target return | `min wᵀΣw` s.t. `wᵀμ = r` |
+| Maximum return for a volatility budget | `max wᵀμ` s.t. `wᵀΣw ≤ b²` |
+
+Outputs: the two headline numbers, the efficient frontier with the current and
+optimal portfolios plotted on it, a weights table with category subtotals sorted
+by absolute change, and an **Apply optimal weights** button that writes the
+solution back into the allocation and re-runs the Monte Carlo. An optional
+stability check re-solves 40 times with the expected returns perturbed and
+reports how far each line's optimal weight moves.
+
+Available in **both** modes. Base allows weight edits and nothing else, and the
+optimizer's decision variables are exactly weights, so it fits Base without
+violating it — there it optimizes against the locked J.P. Morgan figures.
+
+### μ must be the ARITHMETIC return — the trap in this feature
+
+Mean-variance optimization is defined on **arithmetic** expected returns. The
+engine is not: `engine.py` uses `m = ln(1+g)/12`, so the app's `Return %` column
+is consumed as a **compound (geometric)** return and the arithmetic figure is
+derived internally as `g + σ²/2`.
+
+`optimizer.inputs_from_percent()` is the single place that conversion happens.
+Feeding the compound column straight in would understate every risky line's
+expected return in proportion to its variance — under-allocating to exactly the
+assets the optimizer exists to size.
+
+Two consequences worth knowing:
+
+- The optimizer's return and volatility for the *current* weights reproduce the
+  `EXPECTED RETURN` and `PORTFOLIO VOLATILITY` stat cards **exactly** (asserted
+  in `test_optimizer.py` to 1e-12). If they ever diverge, the conversion broke.
+- The engine's `g + σ²/2` is close to but not identical to J.P. Morgan's own
+  published arithmetic column — for Private Equity it gives 12.16% where JPM
+  prints 11.91%. The optimizer matches the engine, because the engine is what
+  produces the numbers on the page.
+
+### Why the solver is trust-constr and not SLSQP
+
+Every problem here is a quadratic program, so the Hessian is a constant matrix
+that can be handed to the solver. Measured on the same seven random long-only
+problems, worst-case weight error against the closed-form tangency:
+
+| Method | Worst error |
+|---|---|
+| SLSQP | 9.05e-02 |
+| trust-constr | 3.14e-08 |
+| trust-constr + exact KKT polish | **5.6e-16** |
+
+Three failure modes were found and fixed while building this, all of which
+produced confident, wrong answers rather than errors:
+
+1. **SLSQP declares success at a vertex.** Started from an LP vertex it solves a
+   linearised subproblem with no descent direction, reports "Optimization
+   terminated successfully" after one iteration, and returns the start — a
+   22.07% minimum-variance volatility where 0.12% was available. `feasible_start`
+   now averages several LP vertices to return an interior point.
+2. **`ftol` is absolute.** Portfolio variance is ~0.006, and near-riskless
+   portfolios ~1e-6, so against `ftol=1e-12` the solver can converge before it
+   moves. The objective is now scaled to O(1).
+3. **A warm start from a neighbouring target return can violate the new return
+   constraint** badly enough to fail — measured at 10 failures in 50 targets,
+   clustered around the optimum. Frontier points now start from a convex blend
+   of the two endpoints, which satisfies the target exactly by construction.
+
+Solver tolerances are deliberately loose (~17ms a solve); the accuracy comes
+from the KKT polish afterwards, which needs only the correct active set.
+
+### Caveat shown in the app
+
+> Mean-variance solutions are highly sensitive to the return assumptions typed
+> above: a 50bp change in one line's expected return can move its optimal weight
+> by tens of percentage points. Treat the frontier as a diagnostic of where the
+> current allocation sits, not as a target allocation. Correlations here are
+> static — they do not rise in a crisis — so the left tail of every portfolio on
+> this chart, including the optimal one, is likely flattered.
+
+This is not boilerplate. On the shipped Base case with the category bands opened
+up, the tangency portfolio puts **94% in AC World Equity**, and the stability
+check shows that weight ranging **9%–95%** under ±0.5% noise on the expected
+returns. The bands are what make the answer usable.
 
 ---
 
