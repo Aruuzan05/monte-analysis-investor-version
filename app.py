@@ -19,6 +19,7 @@ import streamlit as st
 import jpm_ltcma as jpm
 import optimizer as opt
 import run_store as rs
+import universe as uni
 from engine import simulate
 
 # The line the cash floor applies to. Named once so the optimizer panel and the
@@ -336,6 +337,13 @@ if "saved_runs" not in st.session_state:
 
 NONCE = st.session_state.get("editor_nonce", 0)
 
+# A mode switch requested by the optimizer's "Apply as Custom sleeves" on the
+# previous run. It has to land HERE, before the sidebar radio that owns the
+# `mode` key is instantiated — assigning to a widget's key after the widget
+# exists raises StreamlitAPIException.
+if "pending_mode" in st.session_state:
+    st.session_state.mode = st.session_state.pop("pending_mode")
+
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def run_sim(w, r, v, corr_flat, paths, years, seed):
@@ -576,15 +584,38 @@ OBJ_MINVOL = "Minimum volatility for a target return"
 OBJ_MAXRET = "Maximum return for a volatility budget"
 OBJ_GROWTH = "Maximum long-run growth"
 
-opt_lines = [jpm.resolve(x) for x in alloc["LTCMA line"]]
-opt_cats = list(alloc["Category"])
+SCOPE_SLEEVES = "The sleeves above"
+SCOPE_UNIVERSE = f"All {len(uni.INVESTABLE)} LTCMA lines"
+
+scope = st.radio(
+    "Optimize over", [SCOPE_SLEEVES, SCOPE_UNIVERSE], key="opt_scope",
+    horizontal=True,
+    captions=["Re-weight what the allocation already holds",
+              "Pick from J.P. Morgan's whole catalogue"],
+    help=f"The sleeves above answers 'what is the best mix of what we hold?'. "
+         f"All {len(uni.INVESTABLE)} lines answers 'what is the best mix "
+         f"available anywhere in the 2026 LTCMA?' — every line is a candidate, "
+         f"and lines the allocation does not hold start at 0%. The published "
+         f"correlation matrix carries a 59th row, U.S. Inflation, which is not "
+         f"investable and so is never a candidate weight.")
+is_universe = scope == SCOPE_UNIVERSE
+
+# The frame the optimizer actually works on. In universe scope this is all 58
+# lines in exactly the shape `alloc` already has — carrying the user's own
+# Return and Vol for any line the allocation holds — so everything below
+# (correlations, categories, bands, the current-portfolio point) is unchanged.
+opt_alloc = uni.universe_alloc(alloc) if is_universe else alloc
+
+opt_lines = [jpm.resolve(x) for x in opt_alloc["LTCMA line"]]
+opt_cats = list(opt_alloc["Category"])
 n_lines = len(opt_lines)
 cash_pos = [i for i, nm in enumerate(opt_lines) if nm == CASH_LINE]
 
 # arithmetic mu, per optimizer.py's single conversion point
-opt_mu, opt_vols = opt.inputs_from_percent(alloc["Return %"], alloc["Vol %"])
-opt_cov = opt.covariance(opt_vols, jpm.corr_for(alloc["LTCMA line"]))
-cur_w = np.asarray(alloc["Weight %"], dtype=float) / 100.0
+opt_mu, opt_vols = opt.inputs_from_percent(opt_alloc["Return %"],
+                                           opt_alloc["Vol %"])
+opt_cov = opt.covariance(opt_vols, jpm.corr_for(opt_alloc["LTCMA line"]))
+cur_w = np.asarray(opt_alloc["Weight %"], dtype=float) / 100.0
 
 groups = {}
 for i, cat in enumerate(opt_cats):
@@ -618,7 +649,7 @@ else:
                     "Volatility budget %", value=round(cur_v_pct, 2),
                     min_value=0.01, max_value=100.0, step=0.05, format="%.2f")
         with oc2:
-            rf_default = (float(alloc["Return %"].iloc[cash_pos[0]])
+            rf_default = (float(opt_alloc["Return %"].iloc[cash_pos[0]])
                           if cash_pos else 3.80)
             rf_pct = st.number_input(
                 "Risk-free rate %", value=round(rf_default, 2),
@@ -638,7 +669,9 @@ else:
                 max_value=100.0, step=1.0, format="%.2f",
                 help="A cap on any single line. Leave at 100% for no cap. "
                      "Lowering it is the bluntest way to stop the optimizer "
-                     "concentrating everything in one asset.")
+                     "concentrating everything in one asset — and the main "
+                     "lever worth reaching for across the whole catalogue, "
+                     "where an uncapped optimum lands on a handful of lines.")
 
         st.markdown(
             f'<div style="font-weight:600;font-size:.85rem;margin:.7rem 0 .1rem">'
@@ -662,18 +695,38 @@ else:
                 "Max %": st.column_config.NumberColumn(
                     min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
             })
+        # Stability is 40 re-solves of the whole optimum. Over the sleeves that
+        # is ~10s; over 58 lines a single solve is already about a second, so
+        # 40 of them would be the better part of ten minutes. Offered only
+        # where it can actually finish.
         show_stability = st.checkbox(
             "Also run a stability check (slower, ~10s)", value=False,
-            help="Re-solves the optimum 40 times with every expected return "
-                 "nudged by random noise, and reports how far each line's "
-                 "optimal weight moves. The single most useful sanity check "
-                 "on any mean-variance answer.")
+            disabled=is_universe,
+            help=("Re-solves the optimum 40 times with every expected return "
+                  "nudged by random noise, and reports how far each line's "
+                  "optimal weight moves. The single most useful sanity check "
+                  "on any mean-variance answer."
+                  if not is_universe else
+                  "Not available across the whole catalogue: one 58-line solve "
+                  "takes about a second, so 40 of them would run for minutes. "
+                  "Switch to the sleeves above to run it."))
+        show_stability = show_stability and not is_universe
 
     run_opt = st.button("Run optimization", type="primary")
 
     # ----------------------------------------------------------------------
-    # Solve. Never on a keystroke — the frontier is 60 quadratic programs and
-    # the PM is usually mid-typing. Only on an explicit click.
+    # Solve. Never on a keystroke — the frontier is dozens of quadratic
+    # programs and the PM is usually mid-typing. Only on an explicit click.
+    #
+    # ONE frontier, not three. Over the sleeves every QP costs about a
+    # millisecond, so the old path could afford to solve a 60-point frontier
+    # for the chart and then let max_sharpe() solve its own all over again.
+    # At 58 lines a single QP costs about a SECOND — measured at ~31 solver
+    # iterations each, all converging — so that same path would be roughly 180
+    # solves, or three minutes. Across the catalogue the frontier is solved
+    # once at a coarser grid and the tangency portfolio is refined on that
+    # same frontier by universe.tangency_on_frontier(), which agrees with
+    # max_sharpe() to about 1e-6 in Sharpe for a tenth of the solves.
     # ----------------------------------------------------------------------
     if run_opt:
         lower = np.zeros(n_lines)
@@ -686,13 +739,22 @@ else:
                     for _, r in bands_df.iterrows()}
         limits = opt.Limits(lower, upper, groups,
                             {k: band_map.get(k, (0.0, 1.0)) for k in groups})
+        n_pts = 24 if is_universe else 60
+        spinner_msg = (f"Solving {n_lines} lines — about 20 seconds…"
+                       if is_universe else "Solving…")
         try:
-            with st.spinner("Solving…"):
+            with st.spinner(spinner_msg):
                 w0 = opt.feasible_start(limits)          # raises Infeasible
-                frontier = opt.efficient_frontier(opt_mu, opt_cov, limits, w0, 60)
+                frontier = opt.efficient_frontier(opt_mu, opt_cov, limits, w0,
+                                                  n_pts)
                 rf = rf_pct / 100.0
                 if objective == OBJ_SHARPE:
-                    w_opt, _, _, _ = opt.max_sharpe(opt_mu, opt_cov, limits, w0, rf)
+                    if is_universe:
+                        w_opt, _ = uni.tangency_on_frontier(
+                            opt_mu, opt_cov, limits, frontier, rf)
+                    else:
+                        w_opt, _, _, _ = opt.max_sharpe(
+                            opt_mu, opt_cov, limits, w0, rf)
                     note = None
                 elif objective == OBJ_GROWTH:
                     r_ = opt.max_growth(opt_mu, opt_cov, limits, w0)
@@ -715,6 +777,7 @@ else:
                 "frontier": frontier, "rf": rf, "objective": objective,
                 "note": note, "stability": band,
                 "cur_w": cur_w.copy(), "mode": mode,
+                "universe": is_universe, "alloc": opt_alloc.copy(),
             }
         except opt.Infeasible as e:
             st.session_state.pop("opt_result", None)
@@ -831,45 +894,101 @@ else:
 
         # ---- weights table -------------------------------------------------
         p25, p75 = R.get("stability", (None, None))
-        rows = []
-        for i, nm in enumerate(opt_lines):
-            row = {"Category": opt_cats[i],
-                   "LTCMA line": jpm.LABEL.get(nm, nm),
-                   "Current %": cur_w[i] * 100,
-                   "Optimal %": w_opt[i] * 100,
-                   "Change (pp)": (w_opt[i] - cur_w[i]) * 100}
-            if p25 is not None:
-                row["Stable range %"] = f"{p25[i]*100:.0f} – {p75[i]*100:.0f}"
-            rows.append(row)
-        wdf = pd.DataFrame(rows).reindex(
-            pd.DataFrame(rows)["Change (pp)"].abs()
-            .sort_values(ascending=False).index).reset_index(drop=True)
 
-        sub = []
-        for k, idx in groups.items():
-            r_ = {"Category": k, "LTCMA line": "— category total —",
-                  "Current %": cur_w[idx].sum() * 100,
-                  "Optimal %": w_opt[idx].sum() * 100,
-                  "Change (pp)": (w_opt[idx].sum() - cur_w[idx].sum()) * 100}
-            if p25 is not None:
-                r_["Stable range %"] = ""
-            sub.append(r_)
-        wdf = pd.concat([wdf, pd.DataFrame(sub)], ignore_index=True)
+        if R.get("universe"):
+            # Across the catalogue a flat 58-row table is unreadable, and most
+            # of those rows are solver dust: measured on the Base case with no
+            # cap, 43 lines come back "non-zero" but 35 of them hold under
+            # 0.05% between them. So it reads the way a target allocation
+            # actually reads — the three category totals first, then the lines
+            # inside each one — with everything below the threshold folded
+            # into a residual row rather than dropped, so the columns still
+            # add up to 100%.
+            st.markdown("#### Target allocation by category")
+            cat_df = uni.category_table(opt_cats, cur_w, w_opt)
+            st.dataframe(
+                cat_df, hide_index=True, width='stretch',
+                column_config={
+                    "Category": st.column_config.TextColumn(width="medium"),
+                    "Current %": st.column_config.NumberColumn(format="%.2f"),
+                    "Optimal %": st.column_config.NumberColumn(format="%.2f"),
+                    "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
+                })
 
-        st.dataframe(
-            wdf, hide_index=True, width='stretch',
-            column_config={
-                "Category": st.column_config.TextColumn(width="small"),
-                "LTCMA line": st.column_config.TextColumn(width="medium"),
-                "Current %": st.column_config.NumberColumn(format="%.2f"),
-                "Optimal %": st.column_config.NumberColumn(format="%.2f"),
-                "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
-                "Stable range %": st.column_config.TextColumn(
-                    width="small",
-                    help="Interquartile range of this line's optimal weight "
-                         "across 40 re-solves with expected returns perturbed "
-                         "by N(0, 0.5%). A wide range is not a recommendation."),
-            })
+            band = None if p25 is None else (p25, p75)
+            tabs = uni.line_tables(opt_lines, opt_cats, cur_w, w_opt, band=band)
+            n_shown = int((w_opt >= uni.DUST_PCT / 100).sum())
+            st.markdown("#### Lines inside each category")
+            st.caption(
+                f"**{n_shown} of {n_lines} lines** carry at least "
+                f"{uni.DUST_PCT:.2f}%. A line already held is listed even "
+                f"where the optimizer takes it to zero — that is the "
+                f"recommendation, not an omission — and everything below the "
+                f"threshold is summed into a single residual row rather than "
+                f"hidden, so each category's lines still add up to its total "
+                f"above.")
+            for cat in cat_df["Category"]:
+                t = tabs.get(cat)
+                if t is None or t.empty:
+                    continue
+                opt_tot = float(cat_df.loc[cat_df["Category"] == cat,
+                                           "Optimal %"].iloc[0])
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:baseline;margin:1rem 0 .15rem">'
+                    f'<span style="font-weight:600;font-size:.92rem">{cat}</span>'
+                    f'<span style="font-family:{MONO};font-size:.75rem;'
+                    f'color:{INK_3}">{opt_tot:.2f}% optimal · {len(t)} row'
+                    f'{"s" if len(t) != 1 else ""}</span></div>',
+                    unsafe_allow_html=True)
+                st.dataframe(
+                    t, hide_index=True, width='stretch',
+                    column_config={
+                        "LTCMA line": st.column_config.TextColumn(width="large"),
+                        "Current %": st.column_config.NumberColumn(format="%.2f"),
+                        "Optimal %": st.column_config.NumberColumn(format="%.2f"),
+                        "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
+                    })
+        else:
+            rows = []
+            for i, nm in enumerate(opt_lines):
+                row = {"Category": opt_cats[i],
+                       "LTCMA line": jpm.LABEL.get(nm, nm),
+                       "Current %": cur_w[i] * 100,
+                       "Optimal %": w_opt[i] * 100,
+                       "Change (pp)": (w_opt[i] - cur_w[i]) * 100}
+                if p25 is not None:
+                    row["Stable range %"] = f"{p25[i]*100:.0f} – {p75[i]*100:.0f}"
+                rows.append(row)
+            wdf = pd.DataFrame(rows).reindex(
+                pd.DataFrame(rows)["Change (pp)"].abs()
+                .sort_values(ascending=False).index).reset_index(drop=True)
+
+            sub = []
+            for k, idx in groups.items():
+                r_ = {"Category": k, "LTCMA line": "— category total —",
+                      "Current %": cur_w[idx].sum() * 100,
+                      "Optimal %": w_opt[idx].sum() * 100,
+                      "Change (pp)": (w_opt[idx].sum() - cur_w[idx].sum()) * 100}
+                if p25 is not None:
+                    r_["Stable range %"] = ""
+                sub.append(r_)
+            wdf = pd.concat([wdf, pd.DataFrame(sub)], ignore_index=True)
+
+            st.dataframe(
+                wdf, hide_index=True, width='stretch',
+                column_config={
+                    "Category": st.column_config.TextColumn(width="small"),
+                    "LTCMA line": st.column_config.TextColumn(width="medium"),
+                    "Current %": st.column_config.NumberColumn(format="%.2f"),
+                    "Optimal %": st.column_config.NumberColumn(format="%.2f"),
+                    "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
+                    "Stable range %": st.column_config.TextColumn(
+                        width="small",
+                        help="Interquartile range of this line's optimal weight "
+                             "across 40 re-solves with expected returns perturbed "
+                             "by N(0, 0.5%). A wide range is not a recommendation."),
+                })
         if p25 is not None:
             widest = int(np.argmax(p75 - p25))
             st.caption(
@@ -882,14 +1001,32 @@ else:
                 f"recommendation.")
 
         # ---- apply + before/after ------------------------------------------
+        # A catalogue optimum is a different SLEEVE LIST, not just different
+        # weights, so it cannot be applied to Base — Base is the deck's six
+        # sleeves with only the weights unlocked, and rewriting that list would
+        # be exactly the thing Base exists to prevent. It is written into
+        # Custom instead, which is where an arbitrary sleeve list belongs, and
+        # the mode switches so the user lands on what they just applied.
+        applied = (uni.applied_sleeves(R["alloc"], w_opt)
+                   if R.get("universe") else None)
         ac1, ac2 = st.columns([1, 3])
-        if ac1.button("Apply optimal weights", width='stretch'):
-            new_pct = [round(float(x) * 100, 4) for x in w_opt]
-            if is_base:
-                st.session_state.base_weights = new_pct
+        btn = ("Apply as Custom sleeves" if R.get("universe")
+               else "Apply optimal weights")
+        if ac1.button(btn, width='stretch'):
+            if R.get("universe"):
+                st.session_state.custom_alloc = applied.copy()
+                # NOT `st.session_state.mode = ...` here: `mode` is the
+                # sidebar radio's widget key and that radio has already been
+                # instantiated this run, which makes assigning to it raise
+                # StreamlitAPIException. Park the request and let the top of
+                # the next run apply it before the widget exists.
+                st.session_state.pending_mode = MODE_CUSTOM
+            elif is_base:
+                st.session_state.base_weights = [round(float(x) * 100, 4)
+                                                 for x in w_opt]
             else:
                 ca = st.session_state.custom_alloc.copy()
-                ca["Weight %"] = new_pct
+                ca["Weight %"] = [round(float(x) * 100, 4) for x in w_opt]
                 st.session_state.custom_alloc = ca
             # MUST bump: st.data_editor keeps the user's edits as a delta and
             # re-applies them on top of whatever dataframe it is handed, so a
@@ -898,24 +1035,39 @@ else:
             bump_editors()
             st.rerun()
 
+        # The "after" portfolio. Across the catalogue this is the APPLIED
+        # allocation rather than the raw 58-line vector: the sub-threshold
+        # dust is well under a basis point of weight, and simulating 58
+        # correlated lines for 10,000 paths costs far more than it settles.
+        if R.get("universe"):
+            a_w, a_r, a_v = (applied["Weight %"], applied["Return %"],
+                             applied["Vol %"])
+            a_corr = corr_of(applied)
+        else:
+            a_w = [float(x) * 100 for x in w_opt]
+            a_r, a_v, a_corr = alloc["Return %"], alloc["Vol %"], corr_of(alloc)
+
         before = run_sim(tuple(alloc["Weight %"]), tuple(alloc["Return %"]),
                          tuple(alloc["Vol %"]), tuple(corr_of(alloc).flatten()),
                          int(paths), int(years), int(seed))[0]
-        after = run_sim(tuple(float(x) * 100 for x in w_opt),
-                        tuple(alloc["Return %"]), tuple(alloc["Vol %"]),
-                        tuple(corr_of(alloc).flatten()),
+        after = run_sim(tuple(a_w), tuple(a_r), tuple(a_v),
+                        tuple(a_corr.flatten()),
                         int(paths), int(years), int(seed))[0]
         b_t, a_t = before.rows[-1], after.rows[-1]
+        note_txt = (f" Applying replaces the sleeve list with the "
+                    f"{len(applied)} lines above {uni.DUST_PCT:.2f}%, "
+                    f"renormalized to 100%, and switches to Custom."
+                    if R.get("universe") else "")
         ac2.markdown(
             f'<div style="font-size:.82rem;line-height:1.75;padding-top:.35rem">'
             f'<b>If applied</b>, over {years} years: median wealth '
             f'<b>{b_t["Median x"]:.2f}× → {a_t["Median x"]:.2f}×</b>, '
             f'P(loss) <b>{b_t["P(loss)"]*100:.2f}% → {a_t["P(loss)"]*100:.2f}%</b>. '
             f'<span style="color:{INK_3}">Simulated, not analytic — the same '
-            f'Monte Carlo as the rest of the page.</span></div>',
+            f'Monte Carlo as the rest of the page.{note_txt}</span></div>',
             unsafe_allow_html=True)
     elif R:
-        st.info("The allocation changed since the last run. Press "
+        st.info("The allocation or the scope changed since the last run. Press "
                 "**Run optimization** again.")
 
 # --------------------------------------------------------------------------
