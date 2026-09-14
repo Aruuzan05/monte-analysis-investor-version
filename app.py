@@ -18,6 +18,7 @@ import streamlit as st
 
 import jpm_ltcma as jpm
 import optimizer as opt
+import run_store as rs
 from engine import simulate
 
 # The line the cash floor applies to. Named once so the optimizer panel and the
@@ -326,6 +327,12 @@ if "custom_alloc" not in st.session_state:
     st.session_state.custom_alloc = custom_alloc_seed()
     st.session_state.base_weights = list(BASE_WEIGHTS)
     st.session_state.mode = MODE_BASE
+
+if "saved_runs" not in st.session_state:
+    # Session history for the Saved runs panel — a list of run_store.RunRecord,
+    # gone once the browser tab closes. Persistence is the Excel export below,
+    # not this list.
+    st.session_state.saved_runs = []
 
 NONCE = st.session_state.get("editor_nonce", 0)
 
@@ -1054,6 +1061,59 @@ d2.markdown(
     f'seed {seed} · monthly rebalancing. P(loss) is the probability the portfolio sits below its starting '
     f'value at the end of the horizon; the × columns are wealth multiples on a '
     f'1.00× start.</div>', unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------
+# Saved runs — capture the current run into a session-only history, then
+# export the whole history as one Excel workbook. All the record-building,
+# table-shaping and .xlsx writing lives in run_store.py; this block is UI
+# only, exactly like the Optimizer section above.
+# --------------------------------------------------------------------------
+st.markdown("## Saved runs")
+st.caption(
+    "**Save this run** snapshots the current allocation and results into a "
+    "list held for this browser session — nothing is written to disk until "
+    "you download it. Each save adds one row below and one sheet to the "
+    "Excel export.")
+
+saved = st.session_state.saved_runs
+next_seq = len(saved) + 1
+default_label = rs.auto_label(next_seq, "Base" if is_base else "Custom", years)
+
+sc1, sc2, sc3 = st.columns([2.4, 1, 1])
+label_in = sc1.text_input("Label", value=default_label, key=f"run_label_{NONCE}",
+                          label_visibility="collapsed",
+                          placeholder="Label this run…")
+if sc2.button("Save this run", width='stretch'):
+    st.session_state.saved_runs.append(rs.make_record(
+        next_seq, label_in, "Base" if is_base else "Custom",
+        alloc, paths, years, seed, res))
+    bump_editors()
+    st.rerun()
+if sc3.button("Clear history", width='stretch', disabled=not saved):
+    st.session_state.saved_runs = []
+    st.rerun()
+
+if saved:
+    hist_df = rs.history_table(saved)
+    st.dataframe(
+        hist_df, hide_index=True, width='stretch',
+        column_config={
+            "#": st.column_config.NumberColumn(width="small"),
+            "Label": st.column_config.TextColumn(width="medium"),
+            "Saved": st.column_config.TextColumn(width="medium"),
+            "Return %": st.column_config.NumberColumn(format="%.2f"),
+            "Volatility %": st.column_config.NumberColumn(format="%.2f"),
+            "Median wealth": st.column_config.NumberColumn(format="%.3f×"),
+            "P(loss) %": st.column_config.NumberColumn(format="%.2f"),
+        })
+    st.download_button(
+        f"Download Excel ({len(saved)} run{'s' if len(saved) != 1 else ''})",
+        rs.to_excel_bytes(saved),
+        "keepp_saved_runs.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+else:
+    st.caption("No runs saved yet this session.")
 
 
 # --------------------------------------------------------------------------
