@@ -174,7 +174,7 @@ BASE_SLEEVES = [
      "Keepp · global IG blend"),
     ("FI",  "U.S. Cash",                      17.0,   3.80,   0.67,
      "Keepp · 3M T-bill"),
-    ("EQ",  "AC World Equity",                20.0,  12.88,  14.47,
+    ("EQ",  "AC World Equity",                20.0,      7,   16.78,
      "Keepp · MSCI World 10y"),
     ("ALT", "Private Equity",                 10.0,  10.20,  19.78,  ""),
     ("ALT", "Diversified Hedge Funds",         0.0,   5.30,   5.75,  ""),
@@ -190,9 +190,9 @@ SOURCES = [
      "distribution yield 4.26% plus pull-to-par, cross-checked against JPM 2026 LTCMA US IG "
      "at 5.2%. Volatility: regime anchor √(25%·3.3%² + 50%·6.1%² + 25%·10.6%²) = 7.02%."),
     ("Public Equities &amp; Mutual Funds", "12.88% · 14.47%",
-     "Return: MSCI World 10-year annualized total return (iShares MSCI World ETF URTH, "
-     "adjusted close, Jul-2016 to Jul-2026). Volatility: regime anchor "
-     "√(25%·5.1%² + 50%·13.9%² + 25%·20.6%²) = 14.47%."),
+     "Return: J.P. Morgan 2026 LTCMA, AC World Equity, "
+     "Volatility:  "
+     "J.P. Morgan 2026 LTCMA, AC World Equity"),
     ("Private Equity &amp; Venture Capital", "10.20% · 19.78%",
      "J.P. Morgan 2026 LTCMA, Private Equity (USD), <b>compound</b> return. The "
      "original workbook used 11.90%, which is JPM's <i>arithmetic</i> figure for the "
