@@ -1,6 +1,11 @@
 """
 Keepp Capital — Target Allocation Monte Carlo
-Streamlit front end.
+Streamlit front end, client edition.
+
+Written for clients without a finance or maths background: results are told
+in money and plain words first, with the technical figures one click away.
+Every number still comes from the same engine / optimizer modules — this file
+contains layout only.
 
 Deliberately makes ZERO external network requests at runtime: no Google Fonts,
 no CDN, no remote data. Everything is served by the app itself so it loads
@@ -30,70 +35,142 @@ CASH_LINE = "U.S. Cash"
 # Page config + palette
 # --------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Keepp Allocation Simulator",
+    page_title="Keepp · Portfolio Outlook",
     page_icon="◧",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+INK = "#0F1719"
+INK_2 = "#3F4D4F"
 INK_3 = "#6C7C7D"
 ACCENT = "#00877A"
+ACCENT_DK = "#00655B"
 BAND_OUTER = "#D3E9E5"
 BAND_INNER = "#8FC7BE"
 BRICK = "#BC3D18"
-GRID = "#DFE7E6"
+DEEP_BLUE = "#1C5CAB"
+GRID = "#E3EAE9"
+SURFACE = "#FCFDFD"
+
+# Categorical order for holdings (validated: CVD-safe on the light surface).
+# Fixed order, never cycled — a ninth holding folds into "Other".
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+          "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+OTHER_COLOR = "#A9B4B5"
+UP_COLOR = "#2a78d6"      # diverging pair for "more / less of this"
+DOWN_COLOR = "#eb6834"
 
 # System font stacks only. "Microsoft YaHei" / "PingFang SC" keep the UI sane on
 # a Chinese-locale OS without fetching anything.
 SANS = ('-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, '
         '"Helvetica Neue", "PingFang SC", "Microsoft YaHei", Arial, sans-serif')
-MONO = ('ui-monospace, SFMono-Regular, "SF Mono", Consolas, '
-        '"Liberation Mono", Menlo, monospace')
 
 st.markdown(f"""
 <style>
   html, body, [class*="css"], .stApp {{ font-family: {SANS}; }}
-  .block-container {{ padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1500px; }}
-
+  .block-container {{ padding-top: 2rem; padding-bottom: 3rem; max-width: 1240px; }}
   div[data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
 
-  .eyebrow {{ font-family: {MONO}; font-size: .68rem; letter-spacing: .14em;
-             text-transform: uppercase; color: {ACCENT}; margin-bottom: .35rem; }}
-  .sub {{ color: {INK_3}; font-size: .88rem; max-width: 78ch; line-height: 1.55; }}
+  .eyebrow {{ font-size: .72rem; letter-spacing: .14em; text-transform: uppercase;
+             color: {ACCENT}; font-weight: 600; margin-bottom: .3rem; }}
+  .lede {{ color: {INK_3}; font-size: 1rem; max-width: 70ch; line-height: 1.55;
+          margin-top: -.4rem; }}
+  .muted {{ color: {INK_3}; font-size: .85rem; line-height: 1.55; }}
   .foot {{ color: {INK_3}; font-size: .78rem; line-height: 1.6; }}
+  .sect {{ font-size: 1.12rem; font-weight: 650; margin: 1.8rem 0 .2rem; color: {INK}; }}
+  .sectsub {{ color: {INK_3}; font-size: .86rem; margin-bottom: .8rem; }}
+
+  .stMarkdown h1 {{ font-size: 2rem !important; font-weight: 700 !important; }}
+
+  /* Tabs: larger, calmer */
+  button[data-baseweb="tab"] p, [data-testid="stTab"] p,
+  [role="tab"] p {{ font-size: 1rem !important; font-weight: 600; }}
+  [role="tablist"] {{ gap: 1.4rem; }}
+
+  /* Hero */
+  .hero {{ background: linear-gradient(135deg, #E9F4F2 0%, #F6FAF9 70%);
+          border: 1px solid #D6E8E4; border-radius: 16px; padding: 26px 30px; }}
+  .hero .q {{ color: {INK_2}; font-size: 1.02rem; }}
+  .hero .big {{ font-size: 3rem; font-weight: 700; color: {ACCENT_DK};
+               letter-spacing: -.02em; line-height: 1.1; margin: .25rem 0 .35rem;
+               font-variant-numeric: tabular-nums; }}
+  .hero .big small {{ font-size: 1.1rem; font-weight: 600; color: {ACCENT};
+                     margin-left: .6rem; letter-spacing: 0; }}
+  .hero .s {{ color: {INK_2}; font-size: .95rem; line-height: 1.55; max-width: 72ch; }}
+
+  /* Cards */
+  .card {{ background: #fff; border: 1px solid {GRID}; border-radius: 14px;
+          padding: 16px 18px; height: 100%; }}
+  .card .lbl {{ color: {INK_3}; font-size: .82rem; font-weight: 550;
+               display: flex; align-items: center; gap: 7px; }}
+  .card .val {{ font-size: 1.85rem; font-weight: 700; color: {INK}; line-height: 1.15;
+               margin: 6px 0 4px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }}
+  .card .val.hot {{ color: {BRICK}; }}
+  .card .sub {{ color: {INK_3}; font-size: .8rem; line-height: 1.45; }}
+  .card .arrow {{ color: {INK_3}; font-weight: 400; font-size: 1.2rem; margin: 0 .25rem; }}
+  .card .was {{ color: {INK_3}; font-weight: 500; font-size: 1.15rem; }}
+  .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; }}
+  .scen {{ border-top: 4px solid var(--c); }}
+
+  /* Risk meter */
+  .meter {{ display: flex; gap: 4px; margin: 10px 0 6px; }}
+  .meter span {{ flex: 1; height: 8px; border-radius: 4px; background: #E6ECEB; }}
+  .meter span.on {{ background: var(--c); }}
+  .meterlbl {{ display: flex; justify-content: space-between; color: {INK_3};
+              font-size: .7rem; }}
+
+  /* Holdings legend */
+  .stMarkdown table.leg, table.leg {{ width: 100%; border-collapse: collapse;
+             font-size: .88rem; border: none !important; background: transparent; }}
+  table.leg tr, table.leg tr:nth-child(even) {{ background: transparent !important; }}
+  table.leg td {{ padding: 7px 4px !important; border: none !important;
+                 border-bottom: 1px solid #EEF2F1 !important; vertical-align: top; }}
+  .leg td.w {{ text-align: right; font-weight: 650; white-space: nowrap;
+              font-variant-numeric: tabular-nums; }}
+  .leg .d {{ color: {INK_3}; font-size: .76rem; }}
+  .sw {{ width: 12px; height: 12px; border-radius: 3px; display: inline-block;
+        margin-top: 3px; }}
+
+  /* Chart legend strip */
+  .keys {{ display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .8rem;
+          color: {INK_2}; margin-top: -.2rem; }}
+  .keys span {{ display: inline-flex; align-items: center; gap: 7px; }}
+  .keys i {{ width: 16px; height: 10px; border-radius: 2px; display: inline-block; }}
+
+  /* Total bar on the mix tab */
+  .total {{ border-radius: 12px; padding: 12px 16px; font-size: .92rem;
+           display: flex; justify-content: space-between; align-items: center; }}
+  .total.ok {{ background: #E9F4F2; color: {ACCENT_DK}; }}
+  .total.bad {{ background: #FBEFEA; color: {BRICK}; }}
+  .bar {{ height: 6px; background: #E6ECEB; border-radius: 3px; margin-top: 8px;
+         overflow: hidden; }}
+  .bar > div {{ height: 100%; border-radius: 3px; }}
+
+  .sleeve {{ padding-top: 6px; }}
+  .sleeve .n {{ font-weight: 650; font-size: .95rem; display: flex; gap: 8px;
+               align-items: center; }}
+  .sleeve .d {{ color: {INK_3}; font-size: .78rem; line-height: 1.4; margin-left: 20px; }}
+
+  .note {{ border-left: 3px solid {INK_3}; background: #F4F7F7; padding: 10px 14px;
+          border-radius: 6px; font-size: .84rem; line-height: 1.6; color: {INK_2}; }}
+
+  .modechip {{ display: inline-block; font-size: .66rem; font-weight: 600;
+              letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px;
+              border-radius: 20px; vertical-align: middle; margin-left: 10px;
+              background: #F3E7DF; color: {BRICK}; }}
+
   .srcname {{ font-weight: 600; font-size: .85rem; }}
-  .srcmini {{ font-family: {MONO}; font-size: .7rem; color: {INK_3}; }}
-  .srctext {{ font-size: .82rem; line-height: 1.65; color: var(--text-color); opacity: .82; }}
+  .srcmini {{ font-size: .72rem; color: {INK_3}; }}
+  .srctext {{ font-size: .82rem; line-height: 1.65; opacity: .85; }}
 
-  /* Stat cards. These live in CSS, NOT in inline style attributes: the font
-     stacks contain double-quoted family names, which would terminate a
-     style="..." attribute and silently drop the whole rule. */
-  .statcard {{ background: var(--secondary-background-color); border: 1px solid {GRID};
-              border-radius: 6px; padding: 14px 16px; height: 100%; }}
-  .statk {{ font-family: {MONO}; font-size: .68rem; letter-spacing: .1em;
-           text-transform: uppercase; color: {INK_3}; margin-bottom: 6px; }}
-  .statv {{ font-family: {MONO}; font-size: 1.8rem; font-weight: 500;
-           letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; }}
-  .statv.hot {{ color: {BRICK}; }}
-  .statn {{ font-size: .72rem; color: {INK_3}; margin-top: 7px; }}
-
-  /* Mode chip shown next to the page title. */
-  .modechip {{ display: inline-block; font-family: {MONO}; font-size: .66rem;
-              letter-spacing: .1em; text-transform: uppercase; padding: 3px 8px;
-              border-radius: 4px; vertical-align: middle; margin-left: 10px; }}
-  .modechip.base {{ background: {BAND_OUTER}; color: #00655B; }}
-  .modechip.custom {{ background: #F3E7DF; color: {BRICK}; }}
-
-  /* Streamlit's own heading classes outrank a bare h1/h2 selector. */
-  .stMarkdown h1 {{ font-size: 1.9rem !important; }}
-  .stMarkdown h2 {{ font-size: 1.15rem !important; margin-top: 2rem !important; }}
-
-  section[data-testid="stSidebar"] {{ width: 372px !important; }}
+  section[data-testid="stSidebar"] {{ width: 330px !important; }}
   section[data-testid="stSidebar"] .block-container {{ padding-top: 1.4rem; }}
-  hr {{ margin: .9rem 0; }}
 
-  @media (max-width: 430px) {{
-    .statv {{ font-size: 1.45rem; }}
+  @media (max-width: 640px) {{
+    .hero {{ padding: 18px; }}
+    .hero .big {{ font-size: 2.1rem; }}
+    .card .val {{ font-size: 1.45rem; }}
   }}
 </style>
 """, unsafe_allow_html=True)
@@ -115,7 +192,7 @@ def password_ok() -> bool:
     if st.session_state.get("_authed"):
         return True
 
-    st.markdown("### Keepp Allocation Simulator")
+    st.markdown("### Keepp Portfolio Outlook")
     st.caption("Enter the access password to continue.")
     pw = st.text_input("Password", type="password", label_visibility="collapsed")
     if pw:
@@ -133,41 +210,14 @@ if not password_ok():
 
 # --------------------------------------------------------------------------
 # Base case — J.P. Morgan 2026 LTCMA. Returns, volatilities and the sleeve list
-# are hardcoded and cannot be edited in Base; the WEIGHTS can, so a manager can
-# re-weight the deck's own assumptions without leaving them. The shipped weights
-# below are the deck's, and "Reset weights to the deck" restores them.
-#
-# Diversified Hedge Funds carries a 0% base weight on purpose: the July 2027
-# deck's target allocation has no hedge fund sleeve, so a zero weight keeps the
-# shipped Base case numerically identical to the signed-off Excel workbook.
+# are hardcoded and cannot be edited in Base; the WEIGHTS can.
+# See git history for the full provenance notes on each sleeve.
 # --------------------------------------------------------------------------
-# The three J.P. Morgan categories. Every sleeve belongs to one of them, and
-# each gets its own table whose dropdown offers exactly that category's lines.
 CATEGORY_KEYS = jpm.CATEGORY_KEYS                   # ["FI", "EQ", "ALT"]
 CATEGORIES = [jpm.CATEGORY_NAME[k] for k in CATEGORY_KEYS]
 KEY_OF = dict(zip(CATEGORIES, CATEGORY_KEYS))
 
-# Base case — the July 2027 deck's target allocation, expressed as sleeves.
-# Returns are COMPOUND (geometric): engine.py converts with ln(1+g)/12 and
-# derives the arithmetic return as g + sigma^2/2, so JPM's arithmetic column
-# would double-count the variance drag. The original workbook did that for
-# Private Equity (11.90 not 10.20) and Commodities (6.15 not 4.60).
-#
-# Every sleeve sits on an LTCMA line, and that line is what selects the row of
-# J.P. Morgan's correlation matrix the sleeve uses. Three of the six carry
-# Keepp's own return and volatility rather than J.P. Morgan's — a global IG
-# blend, MSCI World realised history, and the live 3-month T-bill — so they are
-# expressed as EDITED versions of the closest line. The `basis` field is the
-# one-line provenance named in the caption under the Base table; an empty
-# string means the sleeve is J.P. Morgan's numbers untouched.
-#
-# Filing them this way rather than as anonymous "manual" rows is what removed
-# the old hand-picked correlation proxy column. The correlation rows are
-# unchanged: the three proxies used to be exactly these three lines, so Base's
-# return, volatility and percentiles are identical to the previous build.
-#
-# Hedge funds sit at 0%: the deck has no hedge fund sleeve, and a zero weight
-# keeps Base's return and volatility identical to the signed-off workbook.
+# Returns are COMPOUND (geometric): engine.py converts with ln(1+g)/12.
 BASE_SLEEVES = [
     # category, LTCMA line,                 weight, return,   vol,   basis
     ("FI",  "U.S. Inv Grade Corporate Bonds", 45.0,   5.00,   7.02,
@@ -183,6 +233,34 @@ BASE_SLEEVES = [
 
 MODE_BASE = "Base · JPM 2026 LTCMA"
 MODE_CUSTOM = "Custom"
+
+# Plain-language names for the holdings a client is most likely to see.
+# Anything not listed falls back to J.P. Morgan's own line name.
+FRIENDLY = {
+    "U.S. Inv Grade Corporate Bonds": (
+        "High-quality bonds",
+        "Loans to large, financially strong companies. Steady income."),
+    "U.S. Cash": (
+        "Cash",
+        "Short-term government bills. The safest, lowest-return holding."),
+    "AC World Equity": (
+        "Global stocks",
+        "Shares in companies around the world. Main source of growth."),
+    "Private Equity": (
+        "Private companies",
+        "Stakes in companies not listed on a stock exchange. Long-term money."),
+    "Diversified Hedge Funds": (
+        "Hedge funds",
+        "Actively managed funds that aim for steadier returns."),
+    "Commodities": (
+        "Commodities",
+        "Raw materials such as energy, metals and crops. Helps against inflation."),
+}
+CATEGORY_PLAIN = {
+    "Fixed Income": "Bonds · steadier income",
+    "Equities": "Stocks · growth with bigger swings",
+    "Alternatives": "Alternatives · diversifiers",
+}
 
 SOURCES = [
     ("Fixed Income", "5.00% · 7.02%",
@@ -200,9 +278,7 @@ SOURCES = [
      "double-counts the variance drag. Corrected here."),
     ("Diversified Hedge Funds", "5.30% · 5.75%",
      "J.P. Morgan 2026 LTCMA, diversified hedge funds (USD) — leveraged and net of "
-     "fees. Both figures are now JPM's published numbers; an earlier build carried a "
-     "6.5% volatility estimate because the vol column was not public at the time. "
-     "Base weight is 0% because the deck's target allocation has no hedge fund "
+     "fees. Base weight is 0% because the deck's target allocation has no hedge fund "
      "sleeve — allocate to it in Custom mode."),
     ("Commodities &amp; Real Assets", "4.60% · 18.32%",
      "J.P. Morgan 2026 LTCMA, broad commodities basket (USD), <b>compound</b> return. "
@@ -214,35 +290,20 @@ SOURCES = [
      "folded into cash per instruction."),
     ("Sub-categories", "3 categories · 58 lines",
      "Sleeves are grouped into J.P. Morgan's own three categories — Fixed Income "
-     "(21 lines), Equities (18) and Alternatives (19). Each category has its own "
-     "table and dropdown, so the list only ever offers that category's lines. "
-     "Picking one fills Return and Vol from the <b>compound</b> column. Editing "
-     "either number by hand keeps the sleeve on its line — the line is what "
-     "supplies the correlation row, so an override changes the figures without "
-     "detaching the sleeve from the matrix."),
+     "(21 lines), Equities (18) and Alternatives (19). Picking a line fills Return "
+     "and Vol from the <b>compound</b> column; the line also supplies the sleeve's "
+     "row of the correlation matrix."),
     ("Correlations", "JPM 2026 LTCMA, USD",
      "<b>The full published 59 × 59 matrix</b>, shipped unmodified as "
-     "<code>jpm_correlations.csv</code> so it can be diffed against the report. "
-     "Nothing is assumed: the matrix used in any run is a sub-matrix of it, "
-     "selected by each sleeve's correlation row. Earlier builds carried a "
-     "fabricated 6 × 6 plus a guessed within-type number; both are gone, as is "
-     "the hand-picked correlation proxy that replaced them. "
-     "<b>One numerical note:</b> as published the matrix is not positive "
-     "semi-definite (smallest eigenvalue −0.0161), which is normal for figures "
-     "rounded to two decimals and is compounded by U.S. Core and U.S. "
-     "Value-Added Real Estate sharing one underlying series. It is repaired once "
-     "at load with Higham's nearest-correlation algorithm; the largest single "
-     "cell moves 0.0066 and no pair moves as much as 0.01."),
+     "<code>jpm_correlations.csv</code>. The matrix used in any run is a sub-matrix "
+     "of it. As published it is not positive semi-definite (smallest eigenvalue "
+     "−0.0161); it is repaired once at load with Higham's nearest-correlation "
+     "algorithm, and no pair moves as much as 0.01."),
     ("Keepp-sourced sleeves", "3 of 6 in Base",
      "Three base sleeves carry Keepp's own return and volatility rather than "
-     "J.P. Morgan's: a global IG blend (5.00% · 7.02%), MSCI World realised "
-     "10-year history (12.88% · 14.47%) and the live 3-month T-bill (3.80% · "
-     "0.67%). Each is filed under the line it most closely is — U.S. Inv Grade "
-     "Corporate Bonds, AC World Equity and U.S. Cash respectively — which is "
-     "what supplies its correlation row. <b>Nothing is chosen by hand:</b> "
-     "earlier builds asked the user to pick a separate correlation proxy for "
-     "every sleeve. Filing a sleeve under a line answers that question once, "
-     "at the point where the user is already naming the asset."),
+     "J.P. Morgan's: a global IG blend, MSCI World realised history and the live "
+     "3-month T-bill. Each is filed under the LTCMA line it most closely is, which "
+     "supplies its correlation row."),
     ("Method", "Regime-based vol",
      "Returns are entered as geometric per annum and simulated as correlated lognormal "
      "monthly draws, with the portfolio rebalanced to target weights every month. Vol "
@@ -253,19 +314,141 @@ SOURCES = [
 
 
 # --------------------------------------------------------------------------
+# Formatting helpers — every client-facing number goes through these
+# --------------------------------------------------------------------------
+def money(x: float) -> str:
+    """$1.97M, $845K, $1.20B — three significant figures, no clutter."""
+    a = abs(x)
+    sign = "−" if x < 0 else ""
+    if a >= 1e9:
+        return f"{sign}${a/1e9:.2f}B"
+    if a >= 1e6:
+        return f"{sign}${a/1e6:.2f}M"
+    if a >= 1e3:
+        return f"{sign}${a/1e3:,.0f}K"
+    return f"{sign}${a:,.0f}"
+
+
+def pct(x: float, dp: int = 1, sign: bool = False) -> str:
+    s = f"{x*100:+.{dp}f}%" if sign else f"{x*100:.{dp}f}%"
+    return s.replace("-", "−")
+
+
+def one_in(p: float) -> str:
+    if p <= 0:
+        return "no simulated case"
+    if p < 0.001:
+        return "less than 1 in 1,000"
+    if p >= 0.5:
+        return f"{p*100:.0f} in 100"
+    return f"about 1 in {round(1/p):,}"
+
+
+RISK_LEVELS = [(0.04, "Very low"), (0.08, "Low"), (0.12, "Moderate"),
+               (0.16, "High"), (9.99, "Very high")]
+RISK_COLORS = ["#1baf7a", "#1baf7a", "#eda100", "#eb6834", BRICK]
+
+
+def risk_level(vol: float):
+    for i, (cut, name) in enumerate(RISK_LEVELS):
+        if vol < cut:
+            return i, name
+    return len(RISK_LEVELS) - 1, RISK_LEVELS[-1][1]
+
+
+def plain_name(line_label: str):
+    """(friendly name, one-line description) for an LTCMA line label."""
+    name = jpm.resolve(line_label)
+    if name in FRIENDLY:
+        return FRIENDLY[name]
+    cat = jpm.category_of(line_label)
+    cat_name = jpm.CATEGORY_NAME.get(cat, "") if cat else ""
+    return (jpm.LABEL.get(name, name) if name else str(line_label),
+            CATEGORY_PLAIN.get(cat_name, ""))
+
+
+def card(label, value, sub="", hot=False, dot=None, extra_cls="", style=""):
+    d = f'<span class="dot" style="background:{dot}"></span>' if dot else ""
+    return (f'<div class="card {extra_cls}" style="{style}">'
+            f'<div class="lbl">{d}{label}</div>'
+            f'<div class="val{" hot" if hot else ""}">{value}</div>'
+            f'<div class="sub">{sub}</div></div>')
+
+
+def section(title, sub=None):
+    st.markdown(f'<div class="sect">{title}</div>'
+                + (f'<div class="sectsub">{sub}</div>' if sub else ""),
+                unsafe_allow_html=True)
+
+
+def color_map(names):
+    """Fixed-order colour per holding. Up to 8 distinct; beyond that the tail
+    folds into 'Other' so no hue is ever generated or cycled."""
+    names = list(dict.fromkeys(names))
+    keep = names if len(names) <= len(SERIES) else names[:len(SERIES) - 1]
+    return {n: SERIES[i] for i, n in enumerate(keep)}
+
+
+def holdings_frame(names, weights, cmap):
+    """Donut-ready rows, tail folded into 'Other', zero weights dropped."""
+    rows, other = [], 0.0
+    for n, w in zip(names, weights):
+        if w <= 1e-6:
+            continue
+        if n in cmap:
+            rows.append({"name": n, "w": float(w), "color": cmap[n]})
+        else:
+            other += float(w)
+    if other > 1e-6:
+        rows.append({"name": "Other", "w": other, "color": OTHER_COLOR})
+    df = pd.DataFrame(rows, columns=["name", "w", "color"])
+    df["order"] = range(len(df))
+    df["lbl"] = df["w"].map(lambda v: f"{v:.1f}%")
+    return df
+
+
+def donut(df, center_top, center_bottom, size=240):
+    if df.empty:
+        return None
+    r_out = size / 2 - 6
+    base = alt.Chart(df).encode(
+        theta=alt.Theta("w:Q", stack=True),
+        order=alt.Order("order:Q"),
+        color=alt.Color("name:N", legend=None,
+                        scale=alt.Scale(domain=list(df["name"]),
+                                        range=list(df["color"]))),
+        tooltip=[alt.Tooltip("name:N", title="Holding"),
+                 alt.Tooltip("lbl:N", title="Share")])
+    ring = base.mark_arc(innerRadius=r_out * 0.62, outerRadius=r_out,
+                         stroke="#ffffff", strokeWidth=2, cornerRadius=3)
+    c1 = alt.Chart(pd.DataFrame([{"t": center_top}])).mark_text(
+        fontSize=22, fontWeight=700, color=INK, dy=-6).encode(text="t:N")
+    c2 = alt.Chart(pd.DataFrame([{"t": center_bottom}])).mark_text(
+        fontSize=11, color=INK_3, dy=14).encode(text="t:N")
+    return (ring + c1 + c2).properties(width=size, height=size).configure_view(
+        strokeWidth=0)
+
+
+def legend_html(df, descs=None):
+    rows = []
+    for _, r in df.iterrows():
+        d = (descs or {}).get(r["name"], "")
+        rows.append(
+            f'<tr><td style="width:18px"><span class="sw" style="background:{r["color"]}">'
+            f'</span></td><td>{r["name"]}'
+            + (f'<div class="d">{d}</div>' if d else "")
+            + f'</td><td class="w">{r["w"]:.1f}%</td></tr>')
+    return f'<table class="leg">{"".join(rows)}</table>'
+
+
+# --------------------------------------------------------------------------
 # Session state
 # --------------------------------------------------------------------------
 COLS = ["LTCMA line", "Weight %", "Return %", "Vol %"]
-
-
-# The deck's own weights, kept separately so "reset to the deck" always has
-# something to reset to no matter what the user has typed.
 BASE_WEIGHTS = [w for _, _, w, _, _, _ in BASE_SLEEVES]
 
 
 def base_alloc(weights=None) -> pd.DataFrame:
-    """The deck's six sleeves. Weights are the caller's; everything else is the
-    deck's and is not editable in Base — that is the whole point of Base."""
     ws = BASE_WEIGHTS if weights is None else list(weights)
     return pd.DataFrame(
         [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
@@ -274,1211 +457,1249 @@ def base_alloc(weights=None) -> pd.DataFrame:
 
 
 def custom_alloc_seed() -> pd.DataFrame:
-    """Custom starts from Base — same six sleeves, same lines, same numbers."""
     return pd.DataFrame(
         [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
           "Weight %": w, "Return %": r, "Vol %": v}
          for k, line, w, r, v, _ in BASE_SLEEVES])
 
 
-# The three sleeves whose Return and Vol are Keepp's rather than J.P. Morgan's.
-# Named in a caption under the Base table instead of a column: the provenance
-# still needs saying, but not once per row on every render.
-KEEPP_SOURCED = [(line, basis) for _, line, _, _, _, basis in BASE_SLEEVES if basis]
-
-
 def sleeve_inputs(alloc: pd.DataFrame):
-    """Turn the sleeve table into the arrays simulate() needs.
-
-    The correlation matrix is a sub-matrix of J.P. Morgan's published 59x59,
-    selected by each sleeve's LTCMA line. Nothing is assumed and nothing is
-    borrowed — the numbers come straight from the CSV (repaired once at import).
-    """
     corr = corr_of(alloc)
     return (tuple(alloc["Weight %"]), tuple(alloc["Return %"]),
             tuple(alloc["Vol %"]), corr)
 
 
 def corr_of(alloc: pd.DataFrame):
-    """The published correlation sub-matrix for this allocation's lines.
-
-    Shared by the simulation and the optimizer, so the two cannot end up
-    disagreeing about how the sleeves move together.
-    """
+    """Published correlation sub-matrix — shared by simulation and optimizer."""
     return jpm.corr_for(list(alloc["LTCMA line"]))
 
 
 def bump_editors():
-    """Force the data_editors to remount.
+    """Force every keyed input widget to remount after a programmatic write.
 
-    st.data_editor keyed with a constant string keeps the user's edits as a
-    delta and re-applies them on top of whatever dataframe it is handed. So
-    writing a new dataframe into session_state is not enough — after a
-    Normalize the edited cell would be restored to its pre-normalized value
-    (weights summing to 94.71% instead of 100%). Changing the widget key
-    remounts the editor with a clean slate.
+    st.data_editor keeps edits as a delta and re-applies them over whatever
+    frame it is handed (the old 94.71% Normalize bug); sliders keep their own
+    value. A nonce in every key gives each a clean slate.
     """
     st.session_state.editor_nonce = st.session_state.get("editor_nonce", 0) + 1
 
 
 if "custom_alloc" not in st.session_state:
     st.session_state.editor_nonce = 0
-    # Custom starts as a copy of the base case, so switching modes is a
-    # starting point rather than a blank slate.
     st.session_state.custom_alloc = custom_alloc_seed()
     st.session_state.base_weights = list(BASE_WEIGHTS)
     st.session_state.mode = MODE_BASE
 
 if "saved_runs" not in st.session_state:
-    # Session history for the Saved runs panel — a list of run_store.RunRecord,
-    # gone once the browser tab closes. Persistence is the Excel export below,
-    # not this list.
     st.session_state.saved_runs = []
 
 NONCE = st.session_state.get("editor_nonce", 0)
 
-# A mode switch requested by the optimizer's "Apply as Custom sleeves" on the
-# previous run. It has to land HERE, before the sidebar radio that owns the
-# `mode` key is instantiated — assigning to a widget's key after the widget
-# exists raises StreamlitAPIException.
+# A mode switch requested by "Apply as Custom sleeves" on the previous run. It
+# must land before the radio that owns the `mode` key is instantiated.
 if "pending_mode" in st.session_state:
     st.session_state.mode = st.session_state.pop("pending_mode")
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
 def run_sim(w, r, v, corr_flat, paths, years, seed):
-    """Cached on the flattened sleeve-level inputs, so N is whatever the
-    allocation table currently holds — not fixed at six."""
     corr = np.array(corr_flat, dtype=float).reshape(len(w), len(w))
     return simulate(list(w), list(r), list(v), corr, paths, years, seed)
 
 
-# Slider step for the two constrained objectives, in percent points. 0.01pp
-# matches the NumberColumn convention used everywhere else in this file.
 STEP_PP = 0.01
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
 def feasible_span(metric, cache_key, _mu, _cov, _limits):
     """Achievable range of a target return / volatility budget. Cached.
-
-    Streamlit does not hash arguments whose names start with an underscore, so
-    `cache_key` carries the identity instead — and it MUST change whenever the
-    feasible set does: the lines, mu, sigma, the correlation slice, the bands,
-    the cash floor, the per-line cap and the scope. Get that wrong and the
-    slider keeps yesterday's ends after a band is widened, which is a silent
-    version of the bug the slider exists to remove.
-
-    Worth caching because of the vol span specifically: its lower end is a
-    minimum-variance QP, ~1ms over six sleeves but about a second over all 58
-    lines, and this runs on every rerun.
-    """
+    `cache_key` MUST change whenever the feasible set does."""
     fn = opt.return_span if metric == "return" else opt.vol_span
     return fn(_mu, _cov, _limits)
 
 
 # --------------------------------------------------------------------------
-# Sidebar — inputs
+# Sidebar — the only three questions a client needs to answer
 # --------------------------------------------------------------------------
 with st.sidebar:
     st.markdown('<div class="eyebrow">Keepp Capital</div>', unsafe_allow_html=True)
-    st.markdown("### Assumptions")
+    st.markdown("### Your plan")
 
-    mode = st.radio(
-        "Assumption set", [MODE_BASE, MODE_CUSTOM],
-        key="mode", label_visibility="collapsed",
-        captions=["Deck assumptions, your weights", "Edit everything"],
-    )
+    amount = st.number_input(
+        "How much are you investing? (USD)", min_value=1_000, max_value=10_000_000_000,
+        value=1_000_000, step=50_000, format="%d",
+        help="Used only to show results in dollars. It does not change the "
+             "percentages.")
+    st.caption(f"= **${amount:,.0f}**")
+    years = st.slider("For how many years?", 1, 30, 10,
+                      help="How long the money stays invested.")
+
+    st.write("")
+    with st.expander("Advanced settings"):
+        mode = st.radio(
+            "Market assumptions", [MODE_BASE, MODE_CUSTOM], key="mode",
+            format_func=lambda m: ("Standard (J.P. Morgan 2026)" if m == MODE_BASE
+                                   else "Custom"),
+            captions=["Keepp's house view — only the mix can change",
+                      "Edit every return and risk figure"],
+        )
+        paths = st.select_slider(
+            "Number of simulated futures",
+            options=[1_000, 2_500, 5_000, 10_000, 25_000, 50_000], value=10_000,
+            help="More futures = smoother, more precise results, but slower.")
+        seed = st.number_input(
+            "Random seed", value=20260722, step=1,
+            help="Fix the seed so everyone running the same inputs sees the "
+                 "same numbers.")
     is_base = mode == MODE_BASE
 
-    st.divider()
-    paths = st.select_slider(
-        "Simulation paths", options=[1_000, 2_500, 5_000, 10_000, 25_000, 50_000],
-        value=10_000)
-    years = st.slider("Horizon (years)", 1, 30, 10)
-    seed = st.number_input("Random seed", value=20260722, step=1,
-                           help="Fix the seed so everyone running the same "
-                                "inputs sees the same numbers.")
-
-    st.divider()
-    if is_base:
-        if st.button("Reset weights to the deck", width='stretch'):
-            st.session_state.base_weights = list(BASE_WEIGHTS)
-            bump_editors()
-            st.rerun()
-    else:
-        if st.button("Reset Custom to JPM defaults", width='stretch'):
-            st.session_state.custom_alloc = custom_alloc_seed()
-            bump_editors()
-            st.rerun()
+    st.markdown(
+        '<div class="foot" style="margin-top:1.2rem">Projections are simulations '
+        'based on long-term market assumptions, not guarantees. Figures are in US '
+        'dollars before fees, taxes and inflation.</div>', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
-# Header
+# Header + navigation
 # --------------------------------------------------------------------------
-chip = ('<span class="modechip base">Base · JPM LTCMA</span>' if is_base
-        else '<span class="modechip custom">Custom assumptions</span>')
-st.markdown('<div class="eyebrow">Keepp Capital · Target Allocation</div>',
+chip = "" if is_base else '<span class="modechip">Custom assumptions</span>'
+st.markdown('<div class="eyebrow">Keepp Capital · Portfolio outlook</div>',
             unsafe_allow_html=True)
-st.markdown(f"# Monte Carlo Allocation Simulator{chip}", unsafe_allow_html=True)
+st.markdown(f"# How could your portfolio grow?{chip}", unsafe_allow_html=True)
 st.markdown(
-    '<p class="sub">Correlated lognormal paths, monthly steps, rebalanced to target '
-    'weights each month. The base case holds the J.P. Morgan 2026 Long-Term Capital Market '
-    'Assumptions used in the July 2027 deck and lets you re-weight them; Custom unlocks '
-    'every input.</p>',
+    f'<p class="lede">We ran {paths:,} possible futures for the markets and '
+    f'tracked your portfolio through each one. Here is the range of what could '
+    f'happen over the next {years} year{"s" if years != 1 else ""}.</p>',
     unsafe_allow_html=True)
-st.write("")
 
-# --------------------------------------------------------------------------
-# Allocation — one row per sleeve. Lives in the main column rather than the
-# sidebar: with five columns and dynamic rows it needs the width.
-# --------------------------------------------------------------------------
-st.markdown("## Allocation")
+tab_over, tab_mix, tab_opt, tab_det = st.tabs(
+    ["Overview", "Your mix", "Improve the mix", "Details & saved runs"],
+    key="nav", on_change="rerun")
 
-if is_base:
-    # Weights are editable; the sleeve list, returns and volatilities are not.
-    # Re-weighting the deck's own assumptions is the question a PM actually
-    # asks of a base case ("what if we took equities to 25?"), and answering it
-    # here rather than in Custom keeps the answer on figures nobody has
-    # touched. Every other column is disabled, so a Base run is always the
-    # deck's assumptions — only the mix moves.
-    edited_base = st.data_editor(
-        base_alloc(st.session_state.base_weights),
-        key=f"base_{NONCE}",
-        hide_index=True,
-        width='stretch',
-        num_rows="fixed",
-        disabled=["Category", "LTCMA line", "Return %", "Vol %"],
-        column_config={
-            "Category": st.column_config.TextColumn(width="small"),
-            "LTCMA line": st.column_config.TextColumn(
-                width="medium",
-                help="The J.P. Morgan line this sleeve is filed under. It "
-                     "supplies the sleeve's row of the published correlation "
-                     "matrix. Fixed in Base — switch to Custom to change it."),
-            # step MUST stay 0.01, as in the Custom tables: a coarser step makes
-            # the editor snap the *displayed* value to it.
-            "Weight %": st.column_config.NumberColumn(
-                min_value=0.0, max_value=100.0, step=0.01, format="%.2f",
-                help="The only editable field in Base. Returns, volatilities "
-                     "and the sleeve list stay as the deck has them."),
-            "Return %": st.column_config.NumberColumn(format="%.2f"),
-            "Vol %": st.column_config.NumberColumn(format="%.2f"),
-        },
-    )
-    # Read the weights straight back out, so the stats below reflect the edit on
-    # this run rather than one interaction late. Session state only has to carry
-    # them across the next rerun.
-    new_w = [float(x) if x == x else 0.0
-             for x in pd.to_numeric(edited_base["Weight %"], errors="coerce")]
-    st.session_state.base_weights = new_w
-    alloc = base_alloc(new_w)
 
-    st.caption(
-        "Returns and volatilities are locked to the J.P. Morgan 2026 LTCMA "
-        "figures behind the July 2027 deck — **only the weights are editable "
-        "here.** Three sleeves carry Keepp's own Return and Vol rather than "
-        "J.P. Morgan's — "
-        + ", ".join(f"**{ln}** ({b.split('·', 1)[1].strip()})"
-                    for ln, b in KEEPP_SOURCED)
-        + " — and are filed under the line that supplies their correlation "
-          "row. Switch to **Custom** in the sidebar to add sleeves or change "
-          "any other input.")
-else:
-    st.caption("One table per J.P. Morgan category — each dropdown offers only "
-               "that category's LTCMA lines. **+** adds a sleeve; select a row "
-               "and press delete to remove it. Type in a cell to filter. "
-               "Picking a line fills Return and Vol with J.P. Morgan's figures; "
-               "type over either one and the sleeve keeps your number and stays "
-               "on its line. ★ marks one of the 14 expansion-proposal lines.")
+# ==========================================================================
+# TAB — Your mix (runs first: everything else depends on the allocation)
+# ==========================================================================
+with tab_mix:
+    mix_left, mix_right = st.columns([1.55, 1], gap="large")
 
-    store = st.session_state.custom_alloc
-    parts, dirty_any = [], False
+    with mix_left:
+        if is_base:
+            section("What's in your portfolio",
+                    "Drag a slider to change how much goes into each holding. "
+                    "The return and risk figures stay fixed to Keepp's house view.")
+            new_w = []
+            for i, (k, line, _, r, v, _) in enumerate(BASE_SLEEVES):
+                nm, desc = FRIENDLY.get(line, (line, ""))
+                c1, c2 = st.columns([1.15, 1], vertical_alignment="center")
+                c1.markdown(
+                    f'<div class="sleeve"><div class="n">'
+                    f'<span class="sw" style="background:{SERIES[i]};margin:0">'
+                    f'</span>{nm}</div><div class="d">{desc}<br>'
+                    f'Expected ~{r:.1f}% a year · swings ±{v:.1f}%</div></div>',
+                    unsafe_allow_html=True)
+                cur = float(st.session_state.base_weights[i])
+                val = c2.slider(
+                    nm, 0.0, 100.0, value=cur, step=0.5, format="%.1f%%",
+                    key=f"bw_{i}_{NONCE}", label_visibility="collapsed")
+                new_w.append(float(val))
+            st.session_state.base_weights = new_w
+            alloc = base_alloc(new_w)
 
-    for key in CATEGORY_KEYS:
-        cat = jpm.CATEGORY_NAME[key]
-        g_prev = (store[store["Category"] == cat]
-                  .reset_index(drop=True)[COLS])
-        g_sum = pd.to_numeric(g_prev["Weight %"], errors="coerce").fillna(0).sum()
-        st.markdown(
-            f'<div style="display:flex;justify-content:space-between;'
-            f'align-items:baseline;margin:1rem 0 .15rem">'
-            f'<span style="font-weight:600;font-size:.92rem">{cat}</span>'
-            f'<span style="font-family:{MONO};font-size:.75rem;color:{INK_3}">'
-            f'{g_sum:.2f}%  ·  {len(g_prev)} sleeve{"s" if len(g_prev) != 1 else ""}'
-            f'  ·  {len(jpm.CHOICES[key])} LTCMA lines available</span></div>',
-            unsafe_allow_html=True)
-        edited = st.data_editor(
-            g_prev,
-            key=f"grp_{key}_{NONCE}",
-            hide_index=True,
-            width='stretch',
-            num_rows="dynamic",
-            column_config={
-                # Options are scoped to THIS category — the reason each category
-                # gets its own editor. Streamlit's SelectboxColumn carries a
-                # single option list per column, so one shared table could not.
-                "LTCMA line": st.column_config.SelectboxColumn(
-                    options=jpm.CHOICES[key], width="medium", required=True,
-                    help=f"J.P. Morgan 2026 LTCMA lines in {cat}. Type to "
-                         f"filter. ★ marks an expansion-proposal line. The "
-                         f"line also supplies this sleeve's row of the "
-                         f"published correlation matrix."),
-                # step MUST stay 0.01: a coarser step makes the editor snap the
-                # *displayed* value to it, so 12.88 renders as 12.80 and a
-                # single click would commit the wrong number.
-                "Weight %": st.column_config.NumberColumn(
-                    min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
-                "Return %": st.column_config.NumberColumn(
-                    min_value=-20.0, max_value=60.0, step=0.01, format="%.2f"),
-                "Vol %": st.column_config.NumberColumn(
-                    min_value=0.0, max_value=100.0, step=0.01, format="%.2f"),
-            },
-        )
-        synced, d = jpm.sync_group(g_prev, edited, key)
-        dirty_any = dirty_any or d
-        synced.insert(0, "Category", cat)
-        parts.append(synced)
-
-    alloc = (pd.concat(parts, ignore_index=True) if parts
-             else custom_alloc_seed().iloc[0:0])
-    st.session_state.custom_alloc = alloc
-    if dirty_any:
-        bump_editors()
-        st.rerun()
-
-alloc = alloc.reset_index(drop=True)
-for _c in ("Weight %", "Return %", "Vol %"):
-    alloc[_c] = pd.to_numeric(alloc[_c], errors="coerce").fillna(0.0)
-
-wsum = float(alloc["Weight %"].sum())
-off = abs(wsum - 100.0) > 0.005
-
-tc1, tc2 = st.columns([1, 3])
-tc1.markdown(
-    f'<div style="font-family:{MONO};font-size:.85rem;padding-top:.4rem">'
-    f'TOTAL &nbsp;<b style="color:{BRICK if off else ACCENT}">{wsum:.2f}%</b>'
-    f'&nbsp;&nbsp;<span style="color:{INK_3};font-size:.78rem">'
-    f'{len(alloc)} sleeves</span></div>', unsafe_allow_html=True)
-if off:
-    if tc1.button("Normalize to 100%", width='stretch'):
-        if wsum > 0:
-            if is_base:
-                st.session_state.base_weights = [
-                    round(x / wsum * 100, 4) for x in st.session_state.base_weights]
-            else:
-                st.session_state.custom_alloc["Weight %"] = (
-                    pd.to_numeric(st.session_state.custom_alloc["Weight %"],
-                                  errors="coerce").fillna(0) / wsum * 100).round(4)
-            bump_editors()
-            st.rerun()
+            st.write("")
+            if st.button("↺ Reset to the recommended mix"):
+                st.session_state.base_weights = list(BASE_WEIGHTS)
+                bump_editors()
+                st.rerun()
         else:
-            st.warning("Enter at least one positive weight.")
+            section("What's in your portfolio",
+                    "One table per asset class. Pick an investment from the list "
+                    "and it fills in J.P. Morgan's figures — type over them to use "
+                    "your own. **+** adds a row; select a row and press Delete to "
+                    "remove it. ★ marks an expansion-proposal line.")
+            store = st.session_state.custom_alloc
+            parts, dirty_any = [], False
+
+            for key in CATEGORY_KEYS:
+                cat = jpm.CATEGORY_NAME[key]
+                g_prev = (store[store["Category"] == cat]
+                          .reset_index(drop=True)[COLS])
+                g_sum = pd.to_numeric(g_prev["Weight %"],
+                                      errors="coerce").fillna(0).sum()
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:baseline;margin:1rem 0 .15rem">'
+                    f'<span style="font-weight:650">{CATEGORY_PLAIN.get(cat, cat)}</span>'
+                    f'<span class="muted">{g_sum:.1f}% of portfolio</span></div>',
+                    unsafe_allow_html=True)
+                edited = st.data_editor(
+                    g_prev, key=f"grp_{key}_{NONCE}", hide_index=True,
+                    width='stretch', num_rows="dynamic",
+                    column_config={
+                        "LTCMA line": st.column_config.SelectboxColumn(
+                            "Investment", options=jpm.CHOICES[key],
+                            width="medium", required=True,
+                            help=f"J.P. Morgan 2026 LTCMA lines in {cat}. "
+                                 f"Type to filter."),
+                        # step MUST stay 0.01 — a coarser step snaps the
+                        # displayed value.
+                        "Weight %": st.column_config.NumberColumn(
+                            "Share %", min_value=0.0, max_value=100.0,
+                            step=0.01, format="%.2f"),
+                        "Return %": st.column_config.NumberColumn(
+                            "Expected return % / yr", min_value=-20.0,
+                            max_value=60.0, step=0.01, format="%.2f",
+                            help="Compound (geometric) return per year."),
+                        "Vol %": st.column_config.NumberColumn(
+                            "Yearly swings %", min_value=0.0, max_value=100.0,
+                            step=0.01, format="%.2f",
+                            help="Volatility: how much the value typically "
+                                 "moves up or down in a year."),
+                    },
+                )
+                synced, d = jpm.sync_group(g_prev, edited, key)
+                dirty_any = dirty_any or d
+                synced.insert(0, "Category", cat)
+                parts.append(synced)
+
+            alloc = (pd.concat(parts, ignore_index=True) if parts
+                     else custom_alloc_seed().iloc[0:0])
+            st.session_state.custom_alloc = alloc
+            if dirty_any:
+                bump_editors()
+                st.rerun()
+
+            st.write("")
+            if st.button("↺ Reset to J.P. Morgan defaults"):
+                st.session_state.custom_alloc = custom_alloc_seed()
+                bump_editors()
+                st.rerun()
+
+    alloc = alloc.reset_index(drop=True)
+    for _c in ("Weight %", "Return %", "Vol %"):
+        alloc[_c] = pd.to_numeric(alloc[_c], errors="coerce").fillna(0.0)
+
+    wsum = float(alloc["Weight %"].sum())
+    off = abs(wsum - 100.0) > 0.005
+
+    # Friendly names + colours, fixed by position in the allocation
+    ALLOC_NAMES = [plain_name(x)[0] for x in alloc["LTCMA line"]]
+    ALLOC_DESCS = {plain_name(x)[0]: plain_name(x)[1] for x in alloc["LTCMA line"]}
+    CMAP = color_map(ALLOC_NAMES)
+
+    with mix_right:
+        section("At a glance")
+        if off:
+            gap = 100.0 - wsum
+            msg = (f"{abs(gap):.1f}% still to place" if gap > 0
+                   else f"{abs(gap):.1f}% too much")
+            fill = min(wsum, 100.0)
+            st.markdown(
+                f'<div class="total bad"><div><b>Total {wsum:.1f}%</b></div>'
+                f'<div>{msg}</div></div>'
+                f'<div class="bar"><div style="width:{fill}%;background:{BRICK}"></div></div>',
+                unsafe_allow_html=True)
+            st.write("")
+            if st.button("Scale everything to 100%", type="primary", width='stretch'):
+                if wsum > 0:
+                    if is_base:
+                        st.session_state.base_weights = [
+                            round(x / wsum * 100, 4)
+                            for x in st.session_state.base_weights]
+                    else:
+                        st.session_state.custom_alloc["Weight %"] = (
+                            pd.to_numeric(st.session_state.custom_alloc["Weight %"],
+                                          errors="coerce").fillna(0) / wsum * 100
+                        ).round(4)
+                    bump_editors()
+                    st.rerun()
+                else:
+                    st.warning("Give at least one holding a share above zero.")
+        else:
+            st.markdown(
+                '<div class="total ok"><div><b>Total 100%</b></div>'
+                '<div>✓ Ready</div></div>', unsafe_allow_html=True)
+
+        hdf = holdings_frame(ALLOC_NAMES, list(alloc["Weight %"]), CMAP)
+        ch = donut(hdf, f"{len(hdf)}", "holdings", size=230)
+        if ch is not None:
+            st.altair_chart(ch, width='content')
+            st.markdown(legend_html(hdf), unsafe_allow_html=True)
 
 if off:
-    st.error(f"**Weights total {wsum:.2f}%.** They must sum to 100% before the "
-             f"simulation can run. Adjust a weight in the table above, or use "
-             f"Normalize to scale them all proportionally.")
+    warn = (f"Your mix adds up to **{wsum:.1f}%**, not 100%. Open **Your mix** "
+            f"to adjust it, or press *Scale everything to 100%* there.")
+    for t in (tab_over, tab_opt, tab_det):
+        with t:
+            st.warning(warn, icon=":material/warning:")
     st.stop()
 
-# --------------------------------------------------------------------------
-# Optimizer — the reverse question
-#
-# The rest of the app answers "what does this allocation produce?". This
-# section answers "what is the best achievable return-and-volatility pair, and
-# which weights get there?" — a mean-variance optimization over the SAME lines,
-# returns, volatilities and published correlation sub-matrix the simulation
-# uses, so the two can never disagree about the current portfolio.
-#
-# Shown in BOTH modes. Base allows weight edits and nothing else, and the
-# optimizer's decision variables are exactly weights, so it fits Base without
-# violating anything: the returns and volatilities it optimizes against are the
-# locked J.P. Morgan figures. In Custom it optimizes against whatever the PM
-# has typed. All numeric work lives in optimizer.py; this block is UI only.
-# --------------------------------------------------------------------------
-st.markdown("## Optimizer")
-st.caption(
-    "The reverse question: given the return and volatility assumptions above, "
-    "what is the best achievable return-and-volatility pair, and which weights "
-    "get there? Decision variables are the individual LTCMA line weights — "
-    "long-only, summing to 100%, subject to a cash floor and per-category bands.")
 
-def range_strip(span, lo_pp, hi_pp, chosen, metric, current_pp):
-    """A 44px bar showing what is reachable, what is not, and where you are.
-
-    Padded ~12% beyond each end on purpose: without the padding the reachable
-    band fills the whole width and the manager sees a full bar rather than a
-    range with ends.
-    """
-    lo_s, hi_s = span.lo * 100, span.hi * 100
-    pad = max((hi_s - lo_s) * 0.12, 0.05)
-    x0, x1 = lo_s - pad, hi_s + pad
-    unit = "return" if metric == "return" else "volatility"
-
-    # No tick labels: the two ends are labelled directly under the band and the
-    # exact figures are in the caption, so an axis only collides with the band.
-    axis = alt.Axis(title=None, labels=False, ticks=False, grid=False,
-                    domain=False)
-    xs = alt.Scale(domain=[x0, x1], nice=False)
-
-    # Explicit pixel extents. A mark_rect with only x/x2 collapses to nothing —
-    # Vega needs a vertical extent, and there is no y field to give it one.
-    TOP, BOT = 4, 26
-
-    unreachable = alt.Chart(pd.DataFrame([{"a": x0, "b": x1}])).mark_rect(
-        color=GRID, opacity=.5, y=TOP, y2=BOT).encode(
-        x=alt.X("a:Q", axis=axis, scale=xs), x2="b:Q")
-    reachable = alt.Chart(pd.DataFrame([{
-        "a": lo_s, "b": hi_s,
-        "lbl": f"reachable {lo_s:.2f}% – {hi_s:.2f}%"}])).mark_rect(
-        color=BAND_INNER, opacity=.95, y=TOP, y2=BOT).encode(
-        x=alt.X("a:Q", scale=xs), x2="b:Q",
-        tooltip=[alt.Tooltip("lbl:N", title=f"Achievable {unit}")])
-
-    # The current portfolio can sit outside the span — on the vol axis the
-    # bands may exclude it. Pin the marker to the edge and say so: that is real
-    # information about the bands, not an error state.
-    outside = current_pp < lo_s or current_pp > hi_s
-    cur_x = float(np.clip(current_pp, lo_s, hi_s))
-    cur = alt.Chart(pd.DataFrame([{
-        "x": cur_x,
-        "lbl": (f"current {current_pp:.2f}% — outside the achievable range"
-                if outside else f"current {current_pp:.2f}%")}])).mark_point(
-        size=95, shape="triangle-up", filled=True, color=BRICK, opacity=1,
-        y=BOT + 5).encode(
-        x=alt.X("x:Q", scale=xs), tooltip=[alt.Tooltip("lbl:N", title="Today")])
-
-    pick = alt.Chart(pd.DataFrame([{
-        "x": float(chosen), "lbl": f"{chosen:.2f}%"}])).mark_rule(
-        color=ACCENT, strokeWidth=2.5, y=TOP - 3, y2=BOT + 3).encode(
-        x=alt.X("x:Q", scale=xs),
-        tooltip=[alt.Tooltip("lbl:N", title=f"Target {unit}")])
-
-    # Two layers rather than one with an align expression: this Altair rejects
-    # an expr in `align`, so the alignment is baked into each mark.
-    def _end(x, text, align):
-        return alt.Chart(pd.DataFrame([{"x": x, "t": text}])).mark_text(
-            fontSize=10, color=INK_3, y=BOT + 13, font="monospace",
-            align=align).encode(x=alt.X("x:Q", scale=xs), text="t:N")
-
-    ends = _end(lo_s, f"{lo_s:.2f}%", "left") + _end(hi_s, f"{hi_s:.2f}%", "right")
-
-    return (unreachable + reachable + ends + cur + pick).properties(
-        height=44).configure_view(strokeWidth=0)
+# ==========================================================================
+# Simulation (cached)
+# ==========================================================================
+w_t, r_t, v_t, corr_full = sleeve_inputs(alloc)
+with st.spinner("Simulating markets…"):
+    res, repaired = run_sim(w_t, r_t, v_t, tuple(corr_full.flatten()),
+                            int(paths), int(years), int(seed))
+term = res.rows[-1]
+T = term["_years"]
+P_LOSS = term["P(loss)"]
+MED_X, LO_X, HI_X = term["Median x"], term["5th x"], term["95th x"]
+BAD_YEAR = res.exp_arith - 1.645 * res.analytic_vol     # approx. 1-in-20 year
+R_IDX, R_NAME = risk_level(res.analytic_vol)
 
 
+def fan_chart(res, amount, height=380):
+    fan = pd.DataFrame(res.fan, columns=["p05", "p25", "p50", "p75", "p95"]) * amount
+    fan["Year"] = res.fan_years
+    for c in ("p05", "p25", "p50", "p75", "p95"):
+        fan[c + "_l"] = fan[c].map(money)
+    fan["yr_l"] = fan["Year"].map(lambda y: f"Year {y:g}")
+
+    ax_y = alt.Axis(title=None, format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                    domain=False, ticks=False, tickCount=6, labelFontSize=12,
+                    labelPadding=8)
+    ax_x = alt.Axis(title="Years from today", titleColor=INK_3, labelColor=INK_3,
+                    grid=False, tickMinStep=1, format="d", labelFontSize=12,
+                    domainColor=GRID, tickColor=GRID, titleFontWeight=400)
+    xs = alt.Scale(domain=[0, float(res.years)], nice=False)
+    ys = alt.Scale(zero=False, nice=True)
+    b = alt.Chart(fan)
+    outer = b.mark_area(color=BAND_OUTER, opacity=.9).encode(
+        x=alt.X("Year:Q", axis=ax_x, scale=xs),
+        y=alt.Y("p05:Q", axis=ax_y, scale=ys), y2="p95:Q")
+    inner = b.mark_area(color=BAND_INNER, opacity=.9).encode(
+        x="Year:Q", y=alt.Y("p25:Q", scale=ys), y2="p75:Q")
+    start = alt.Chart(pd.DataFrame({"y": [amount]})).mark_rule(
+        color=INK_3, strokeDash=[4, 4], opacity=.8).encode(y="y:Q")
+    median = b.mark_line(color=ACCENT_DK, strokeWidth=2.5).encode(
+        x="Year:Q", y=alt.Y("p50:Q", scale=ys))
+
+    hover = alt.selection_point(fields=["Year"], nearest=True, on="pointerover",
+                                empty=False, clear="pointerout")
+    rule = b.mark_rule(color=INK_3, strokeWidth=1).encode(
+        x="Year:Q",
+        opacity=alt.condition(hover, alt.value(.6), alt.value(0)),
+        tooltip=[alt.Tooltip("yr_l:N", title="When"),
+                 alt.Tooltip("p95_l:N", title="Strong markets"),
+                 alt.Tooltip("p50_l:N", title="Typical"),
+                 alt.Tooltip("p05_l:N", title="Weak markets")],
+    ).add_params(hover)
+    dots = b.transform_fold(["p05", "p50", "p95"], as_=["k", "v"]).mark_circle(
+        size=70, color=ACCENT_DK, stroke="white", strokeWidth=2).encode(
+        x="Year:Q", y=alt.Y("v:Q", scale=ys),
+        opacity=alt.condition(hover, alt.value(1), alt.value(0)))
+
+    end = fan.iloc[-1]
+    ends = pd.DataFrame([
+        {"Year": end["Year"], "v": end["p95"], "t": end["p95_l"], "c": DEEP_BLUE},
+        {"Year": end["Year"], "v": end["p50"], "t": end["p50_l"], "c": ACCENT_DK},
+        {"Year": end["Year"], "v": end["p05"], "t": end["p05_l"], "c": BRICK},
+    ])
+    tags = alt.Chart(ends).mark_text(align="left", dx=8, fontSize=13,
+                                     fontWeight=700).encode(
+        x="Year:Q", y=alt.Y("v:Q", scale=ys), text="t:N",
+        color=alt.Color("c:N", scale=None))
+    return (outer + inner + start + median + rule + dots + tags).properties(
+        height=height, padding={"left": 4, "right": 70, "top": 10, "bottom": 4}
+    ).configure_view(strokeWidth=0)
+
+
+# ==========================================================================
+# TAB — Overview
+# ==========================================================================
+with tab_over:
+    if repaired:
+        st.warning("The correlation sub-matrix needed a numerical repair before "
+                   "simulating. This should not happen with the published J.P. "
+                   "Morgan matrix — worth reporting if you see it.")
+
+    gain = MED_X * amount - amount
+    st.markdown(
+        f'<div class="hero">'
+        f'<div class="q">If you invest <b>{money(amount)}</b> today, in '
+        f'<b>{T} years</b> it could be worth about</div>'
+        f'<div class="big">{money(MED_X * amount)}'
+        f'<small>{"+" if gain >= 0 else "−"}{money(abs(gain))} · '
+        f'{pct(term["Median"])} a year</small></div>'
+        f'<div class="s">That is the <b>typical</b> outcome — half of the simulated '
+        f'futures end higher, half lower. In 9 out of 10 futures the portfolio ends '
+        f'between <b>{money(LO_X * amount)}</b> and <b>{money(HI_X * amount)}</b>.'
+        f'</div></div>', unsafe_allow_html=True)
+
+    section(f"Three ways the next {T} years could go")
+    s1, s2, s3 = st.columns(3)
+    for col, colr, title, x, ann, sub in (
+        (s1, BRICK, "If markets are weak", LO_X, term["5th"],
+         "Only 1 in 20 futures ends lower than this."),
+        (s2, ACCENT, "Typical outcome", MED_X, term["Median"],
+         "The middle of all simulated futures."),
+        (s3, DEEP_BLUE, "If markets are strong", HI_X, term["95th"],
+         "Only 1 in 20 futures ends higher than this."),
+    ):
+        col.markdown(card(
+            title, money(x * amount),
+            f'{pct(ann, sign=True)} a year · {pct(x - 1, 0, sign=True)} in total<br>{sub}',
+            dot=colr, extra_cls="scen", style=f"--c:{colr}"), unsafe_allow_html=True)
+
+    section("How your money could grow, year by year",
+            "Each shaded band shows where the portfolio is likely to be. "
+            "Hover over the chart to read any year.")
+    st.altair_chart(fan_chart(res, amount), width='stretch')
+    st.markdown(
+        f'<div class="keys">'
+        f'<span><i style="background:{ACCENT_DK};height:3px"></i>Typical path</span>'
+        f'<span><i style="background:{BAND_INNER}"></i>Likely range (half of futures)</span>'
+        f'<span><i style="background:{BAND_OUTER}"></i>Wide range (9 in 10 futures)</span>'
+        f'<span><i style="border-top:2px dashed {INK_3};height:0"></i>'
+        f'What you put in</span></div>', unsafe_allow_html=True)
+
+    st.write("")
+    left, right = st.columns([1, 1.1], gap="large")
+    with left:
+        section("How much risk are you taking?")
+        rc = RISK_COLORS[R_IDX]
+        segs = "".join(
+            f'<span class="{"on" if i <= R_IDX else ""}"></span>'
+            for i in range(len(RISK_LEVELS)))
+        st.markdown(
+            f'<div class="card"><div class="lbl">Risk level</div>'
+            f'<div class="val" style="color:{rc}">{R_NAME}</div>'
+            f'<div class="meter" style="--c:{rc}">{segs}</div>'
+            f'<div class="meterlbl"><span>Very low</span><span>Very high</span></div>'
+            f'<div class="sub" style="margin-top:10px">In a normal year the value '
+            f'moves up or down by about <b>±{pct(res.analytic_vol)}</b>.</div></div>',
+            unsafe_allow_html=True)
+        st.write("")
+        k1, k2 = st.columns(2)
+        k1.markdown(card(
+            "A bad year (1 in 20)",
+            pct(BAD_YEAR, sign=True),
+            f"≈ {money(BAD_YEAR * amount)} on {money(amount)}. "
+            f"Rough estimate for a single year.",
+            hot=BAD_YEAR < 0), unsafe_allow_html=True)
+        k2.markdown(card(
+            "Chance of a loss",
+            pct(P_LOSS),
+            f"{one_in(P_LOSS).capitalize()} futures end below "
+            f"{money(amount)} after {T} years.",
+            hot=P_LOSS > 0.05), unsafe_allow_html=True)
+
+    with right:
+        section("What you're invested in")
+        hdf = holdings_frame(ALLOC_NAMES, list(alloc["Weight %"]), CMAP)
+        d1, d2 = st.columns([1, 1.25], vertical_alignment="center")
+        with d1:
+            ch = donut(hdf, f"{len(hdf)}", "holdings", size=220)
+            if ch is not None:
+                st.altair_chart(ch, width='content')
+        with d2:
+            st.markdown(legend_html(hdf, ALLOC_DESCS), unsafe_allow_html=True)
+
+    st.write("")
+    st.markdown(
+        '<div class="note">These results come from computer simulations based on '
+        'long-term market assumptions. They are not a promise or forecast of any '
+        'specific outcome. Real markets can behave worse than a model expects, '
+        'especially in a crisis. Figures are before fees, taxes and inflation.</div>',
+        unsafe_allow_html=True)
+
+
+# ==========================================================================
+# TAB — Improve the mix (optimizer)
+# ==========================================================================
 OBJ_SHARPE = "Maximum Sharpe ratio"
 OBJ_MINVOL = "Minimum volatility for a target return"
 OBJ_MAXRET = "Maximum return for a volatility budget"
 OBJ_GROWTH = "Maximum long-run growth"
+OBJ_PLAIN = {
+    OBJ_SHARPE: ("Best balance", "Most return for each unit of risk"),
+    OBJ_GROWTH: ("Most growth", "Grow the typical outcome as much as possible"),
+    OBJ_MINVOL: ("Least risk for a return", "Pick a return, keep swings smallest"),
+    OBJ_MAXRET: ("Most return for a risk level", "Pick a risk limit, earn the most"),
+}
 
 SCOPE_SLEEVES = "The sleeves above"
 SCOPE_UNIVERSE = f"All {len(uni.INVESTABLE)} LTCMA lines"
 
-scope = st.radio(
-    "Optimize over", [SCOPE_SLEEVES, SCOPE_UNIVERSE], key="opt_scope",
-    horizontal=True,
-    captions=["Re-weight what the allocation already holds",
-              "Pick from J.P. Morgan's whole catalogue"],
-    help=f"The sleeves above answers 'what is the best mix of what we hold?'. "
-         f"All {len(uni.INVESTABLE)} lines answers 'what is the best mix "
-         f"available anywhere in the 2026 LTCMA?' — every line is a candidate, "
-         f"and lines the allocation does not hold start at 0%. The published "
-         f"correlation matrix carries a 59th row, U.S. Inflation, which is not "
-         f"investable and so is never a candidate weight.")
-is_universe = scope == SCOPE_UNIVERSE
 
-# The frame the optimizer actually works on. In universe scope this is all 58
-# lines in exactly the shape `alloc` already has — carrying the user's own
-# Return and Vol for any line the allocation holds — so everything below
-# (correlations, categories, bands, the current-portfolio point) is unchanged.
-opt_alloc = uni.universe_alloc(alloc) if is_universe else alloc
+def range_strip(span, chosen, metric, current_pp):
+    """Bar showing what is reachable, and where you are today."""
+    lo_s, hi_s = span.lo * 100, span.hi * 100
+    pad = max((hi_s - lo_s) * 0.12, 0.05)
+    x0, x1 = lo_s - pad, hi_s + pad
+    unit = "return" if metric == "return" else "risk"
+    axis = alt.Axis(title=None, labels=False, ticks=False, grid=False, domain=False)
+    xs = alt.Scale(domain=[x0, x1], nice=False)
+    TOP, BOT = 6, 22
+    reachable = alt.Chart(pd.DataFrame([{
+        "a": lo_s, "b": hi_s, "lbl": f"{lo_s:.2f}% – {hi_s:.2f}%"}])).mark_rect(
+        color=BAND_OUTER, y=TOP, y2=BOT, cornerRadius=8).encode(
+        x=alt.X("a:Q", axis=axis, scale=xs), x2="b:Q",
+        tooltip=[alt.Tooltip("lbl:N", title=f"Possible {unit}")])
+    outside = current_pp < lo_s or current_pp > hi_s
+    cur = alt.Chart(pd.DataFrame([{
+        "x": float(np.clip(current_pp, lo_s, hi_s)),
+        "lbl": (f"{current_pp:.2f}% (outside the possible range)" if outside
+                else f"{current_pp:.2f}%")}])).mark_point(
+        size=90, shape="triangle-up", filled=True, color=INK_3, opacity=1,
+        y=BOT + 7).encode(x=alt.X("x:Q", scale=xs),
+                          tooltip=[alt.Tooltip("lbl:N", title="Your mix today")])
+    pick = alt.Chart(pd.DataFrame([{"x": float(chosen)}])).mark_circle(
+        size=260, color=ACCENT, stroke="white", strokeWidth=3, opacity=1,
+        y=(TOP + BOT) / 2).encode(x=alt.X("x:Q", scale=xs))
 
-opt_lines = [jpm.resolve(x) for x in opt_alloc["LTCMA line"]]
-opt_cats = list(opt_alloc["Category"])
-n_lines = len(opt_lines)
-cash_pos = [i for i, nm in enumerate(opt_lines) if nm == CASH_LINE]
+    def _end(x, text, align):
+        return alt.Chart(pd.DataFrame([{"x": x, "t": text}])).mark_text(
+            fontSize=11, color=INK_3, y=BOT + 20, align=align).encode(
+            x=alt.X("x:Q", scale=xs), text="t:N")
 
-# arithmetic mu, per optimizer.py's single conversion point
-opt_mu, opt_vols = opt.inputs_from_percent(opt_alloc["Return %"],
-                                           opt_alloc["Vol %"])
-opt_cov = opt.covariance(opt_vols, jpm.corr_for(opt_alloc["LTCMA line"]))
-cur_w = np.asarray(opt_alloc["Weight %"], dtype=float) / 100.0
+    ends = _end(lo_s, f"{lo_s:.1f}%", "left") + _end(hi_s, f"{hi_s:.1f}%", "right")
+    return (reachable + ends + cur + pick).properties(height=50).configure_view(
+        strokeWidth=0)
 
-groups = {}
-for i, cat in enumerate(opt_cats):
-    groups.setdefault(cat, []).append(i)
-groups = {k: np.array(v) for k, v in groups.items()}
-cur_cat_pct = {k: float(cur_w[i].sum()) * 100.0 for k, i in groups.items()}
 
-if n_lines < 2:
-    st.info("Add a second sleeve to optimize — with one line there is nothing "
-            "to allocate between.")
-else:
-    with st.expander("Objective and constraints", expanded=False):
-        oc1, oc2 = st.columns([1.35, 1])
-        with oc1:
-            objective = st.radio(
-                "Objective", [OBJ_SHARPE, OBJ_GROWTH, OBJ_MINVOL, OBJ_MAXRET],
-                key="opt_objective",
-                help="Sharpe maximises return per unit of risk above the "
-                     "risk-free rate. Long-run growth maximises the MEDIAN "
-                     "wealth this app's fan chart plots, which is a different "
-                     "portfolio — it charges for the variance drag Sharpe "
-                     "ignores.")
-            cur_r_pct, cur_v_pct = [x * 100 for x in
-                                    opt.portfolio(cur_w, opt_mu, opt_cov)]
-            # The two constrained objectives take a parameter whose achievable
-            # range depends on the cash floor, the per-line cap and the category
-            # bands — all of which are rendered BELOW this point. So the slot is
-            # reserved here and filled further down, once those are known. It
-            # keeps the control exactly where it has always been on screen while
-            # letting its ends be computed from values read after it.
-            target_slot = st.container()
-        with oc2:
+def change_chart(names, cur, new):
+    rows = [{"name": n, "chg": (b - a) * 100, "now": a * 100, "new": b * 100}
+            for n, a, b in zip(names, cur, new) if abs(b - a) * 100 >= 0.05]
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).sort_values("chg", ascending=False)
+    df["dir"] = np.where(df["chg"] >= 0, "More", "Less")
+    df["t"] = df["chg"].map(lambda v: f"{v:+.1f} pts".replace("-", "−"))
+    df["tip"] = [f"{a:.1f}% → {b:.1f}%" for a, b in zip(df["now"], df["new"])]
+    lim = float(df["chg"].abs().max()) * 1.35 + 1
+    y = alt.Y("name:N", sort=list(df["name"]), title=None,
+              axis=alt.Axis(labelFontSize=12, labelColor=INK, domain=False,
+                            ticks=False, labelPadding=10, labelLimit=220))
+    x = alt.X("chg:Q", title=None, scale=alt.Scale(domain=[-lim, lim]),
+              axis=alt.Axis(labels=False, ticks=False, grid=False, domain=False))
+    bars = alt.Chart(df).mark_bar(cornerRadiusEnd=4, height=16).encode(
+        x=x, y=y,
+        color=alt.Color("dir:N", legend=None, scale=alt.Scale(
+            domain=["More", "Less"], range=[UP_COLOR, DOWN_COLOR])),
+        tooltip=[alt.Tooltip("name:N", title="Holding"),
+                 alt.Tooltip("tip:N", title="Share"),
+                 alt.Tooltip("t:N", title="Change")])
+    pos = alt.Chart(df[df["chg"] >= 0]).mark_text(
+        align="left", dx=6, fontSize=12, fontWeight=600, color=INK_2).encode(
+        x="chg:Q", y=alt.Y("name:N", sort=list(df["name"])), text="t:N")
+    neg = alt.Chart(df[df["chg"] < 0]).mark_text(
+        align="right", dx=-6, fontSize=12, fontWeight=600, color=INK_2).encode(
+        x="chg:Q", y=alt.Y("name:N", sort=list(df["name"])), text="t:N")
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=INK_3).encode(x="x:Q")
+    return (bars + zero + pos + neg).properties(
+        height=max(34 * len(df), 80)).configure_view(strokeWidth=0)
+
+
+with tab_opt:
+    section("Let the model suggest a better mix",
+            "Choose a goal. The model searches for the best combination of your "
+            "holdings — using the same return and risk assumptions as the "
+            "Overview — and shows what would change.")
+
+    scope = st.session_state.get("opt_scope", SCOPE_SLEEVES)
+    is_universe = scope == SCOPE_UNIVERSE
+
+    opt_alloc = uni.universe_alloc(alloc) if is_universe else alloc
+    opt_lines = [jpm.resolve(x) for x in opt_alloc["LTCMA line"]]
+    opt_cats = list(opt_alloc["Category"])
+    n_lines = len(opt_lines)
+    cash_pos = [i for i, nm in enumerate(opt_lines) if nm == CASH_LINE]
+
+    opt_mu, opt_vols = opt.inputs_from_percent(opt_alloc["Return %"],
+                                               opt_alloc["Vol %"])
+    opt_cov = opt.covariance(opt_vols, jpm.corr_for(opt_alloc["LTCMA line"]))
+    cur_w = np.asarray(opt_alloc["Weight %"], dtype=float) / 100.0
+
+    groups = {}
+    for i, cat in enumerate(opt_cats):
+        groups.setdefault(cat, []).append(i)
+    groups = {k: np.array(v) for k, v in groups.items()}
+    cur_cat_pct = {k: float(cur_w[i].sum()) * 100.0 for k, i in groups.items()}
+
+    if n_lines < 2:
+        st.info("Add a second holding to use this — with one there is nothing to "
+                "rebalance between.")
+    else:
+        objective = st.radio(
+            "Your goal", list(OBJ_PLAIN), key="opt_objective", horizontal=True,
+            format_func=lambda o: OBJ_PLAIN[o][0],
+            captions=[OBJ_PLAIN[o][1] for o in OBJ_PLAIN])
+        cur_r_pct, cur_v_pct = [x * 100 for x in
+                                opt.portfolio(cur_w, opt_mu, opt_cov)]
+        # Filled further down, once the advanced limits are known.
+        target_slot = st.container()
+
+        with st.expander("Advanced limits"):
+            scope = st.radio(
+                "Choose from", [SCOPE_SLEEVES, SCOPE_UNIVERSE], key="opt_scope",
+                horizontal=True,
+                captions=["Only re-weight what the portfolio holds",
+                          "Any of J.P. Morgan's 58 asset classes (slower)"])
+            oc1, oc2, oc3 = st.columns(3)
             rf_default = (float(opt_alloc["Return %"].iloc[cash_pos[0]])
                           if cash_pos else 3.80)
-            rf_pct = st.number_input(
+            rf_pct = oc1.number_input(
                 "Risk-free rate %", value=round(rf_default, 2),
                 min_value=0.0, max_value=20.0, step=0.05, format="%.2f",
-                help="Defaults to this allocation's own U.S. Cash return, so "
-                     "the tangency point stays consistent with your inputs.")
-            floor_pct = st.number_input(
-                "Cash floor %", value=5.00, min_value=0.0, max_value=100.0,
-                step=0.5, format="%.2f",
-                disabled=not cash_pos,
-                help=("Minimum weight on the U.S. Cash line."
-                      if cash_pos else
-                      "No U.S. Cash line in this allocation, so there is "
-                      "nothing to floor. Add one to enable this."))
-            cap_pct = st.number_input(
-                "Max weight per line %", value=100.00, min_value=0.01,
+                help="Defaults to this allocation's own U.S. Cash return.")
+            floor_pct = oc2.number_input(
+                "Keep at least this much cash %", value=5.00, min_value=0.0,
+                max_value=100.0, step=0.5, format="%.2f", disabled=not cash_pos,
+                help=("Minimum weight on the cash line." if cash_pos else
+                      "No cash line in this allocation, so nothing to floor."))
+            cap_pct = oc3.number_input(
+                "Max in any one holding %", value=100.00, min_value=0.01,
                 max_value=100.0, step=1.0, format="%.2f",
-                help="A cap on any single line. Leave at 100% for no cap. "
-                     "Lowering it is the bluntest way to stop the optimizer "
-                     "concentrating everything in one asset — and the main "
-                     "lever worth reaching for across the whole catalogue, "
-                     "where an uncapped optimum lands on a handful of lines.")
+                help="Stops the model concentrating everything in one asset. "
+                     "Leave at 100% for no cap.")
 
-        st.markdown(
-            f'<div style="font-weight:600;font-size:.85rem;margin:.7rem 0 .1rem">'
-            f'Category bands</div>'
-            f'<div style="color:{INK_3};font-size:.78rem;margin-bottom:.35rem">'
-            f'Minimum and maximum total weight per J.P. Morgan category. '
-            f'Defaults are the current totals ±10pp.</div>',
-            unsafe_allow_html=True)
-        band_seed = pd.DataFrame([
-            {"Category": k,
-             "Min %": round(max(0.0, cur_cat_pct[k] - 10.0), 2),
-             "Max %": round(min(100.0, cur_cat_pct[k] + 10.0), 2)}
-            for k in groups])
-        bands_df = st.data_editor(
-            band_seed, key=f"opt_bands_{NONCE}", hide_index=True,
-            width='stretch', num_rows="fixed", disabled=["Category"],
-            column_config={
-                "Category": st.column_config.TextColumn(width="medium"),
-                "Min %": st.column_config.NumberColumn(
-                    min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
-                "Max %": st.column_config.NumberColumn(
-                    min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
-            })
-        # Stability is 40 re-solves of the whole optimum. Over the sleeves that
-        # is ~10s; over 58 lines a single solve is already about a second, so
-        # 40 of them would be the better part of ten minutes. Offered only
-        # where it can actually finish.
-        show_stability = st.checkbox(
-            "Also run a stability check (slower, ~10s)", value=False,
-            disabled=is_universe,
-            help=("Re-solves the optimum 40 times with every expected return "
-                  "nudged by random noise, and reports how far each line's "
-                  "optimal weight moves. The single most useful sanity check "
-                  "on any mean-variance answer."
-                  if not is_universe else
-                  "Not available across the whole catalogue: one 58-line solve "
-                  "takes about a second, so 40 of them would run for minutes. "
-                  "Switch to the sleeves above to run it."))
-        show_stability = show_stability and not is_universe
+            st.markdown('<div class="muted" style="margin:.6rem 0 .3rem">'
+                        '<b>Limits per asset class</b> — by default, each can move '
+                        '10 points either way from today.</div>',
+                        unsafe_allow_html=True)
+            band_seed = pd.DataFrame([
+                {"Category": k,
+                 "Min %": round(max(0.0, cur_cat_pct[k] - 10.0), 2),
+                 "Max %": round(min(100.0, cur_cat_pct[k] + 10.0), 2)}
+                for k in groups])
+            bands_df = st.data_editor(
+                band_seed, key=f"opt_bands_{NONCE}", hide_index=True,
+                width='stretch', num_rows="fixed", disabled=["Category"],
+                column_config={
+                    "Category": st.column_config.TextColumn("Asset class",
+                                                            width="medium"),
+                    "Min %": st.column_config.NumberColumn(
+                        "At least %", min_value=0.0, max_value=100.0, step=0.5,
+                        format="%.2f"),
+                    "Max %": st.column_config.NumberColumn(
+                        "At most %", min_value=0.0, max_value=100.0, step=0.5,
+                        format="%.2f"),
+                })
+            show_stability = st.checkbox(
+                "Also run a stability check (slower, ~10s)", value=False,
+                disabled=is_universe,
+                help=("Re-solves 40 times with every expected return nudged by "
+                      "random noise and reports how far each weight moves."
+                      if not is_universe else
+                      "Not available across all 58 lines — it would take minutes."))
+            show_stability = show_stability and not is_universe
 
-    # ----------------------------------------------------------------------
-    # The constraint set, built ONCE here rather than inside the run block, so
-    # the slider's ends and the solve are guaranteed to come from the same
-    # Limits object. Two code paths would let the slider offer a target the
-    # solver then rejects.
-    # ----------------------------------------------------------------------
-    lower = np.zeros(n_lines)
-    upper = np.full(n_lines, cap_pct / 100.0)
-    if cash_pos:
-        lower[cash_pos[0]] = floor_pct / 100.0
-        upper[cash_pos[0]] = max(upper[cash_pos[0]], floor_pct / 100.0)
-    band_map = {r["Category"]: (float(r["Min %"]) / 100.0,
-                                float(r["Max %"]) / 100.0)
-                for _, r in bands_df.iterrows()}
-    limits = opt.Limits(lower, upper, groups,
-                        {k: band_map.get(k, (0.0, 1.0)) for k in groups})
+        lower = np.zeros(n_lines)
+        upper = np.full(n_lines, cap_pct / 100.0)
+        if cash_pos:
+            lower[cash_pos[0]] = floor_pct / 100.0
+            upper[cash_pos[0]] = max(upper[cash_pos[0]], floor_pct / 100.0)
+        band_map = {r["Category"]: (float(r["Min %"]) / 100.0,
+                                    float(r["Max %"]) / 100.0)
+                    for _, r in bands_df.iterrows()}
+        limits = opt.Limits(lower, upper, groups,
+                            {k: band_map.get(k, (0.0, 1.0)) for k in groups})
 
-    # ----------------------------------------------------------------------
-    # Fill the reserved slot: a slider bounded by what is actually achievable,
-    # plus a strip showing the range. Only the two constrained objectives need
-    # it, and the span costs a QP, so it is computed only when asked for.
-    # ----------------------------------------------------------------------
-    target_pct = budget_pct = None
-    if objective in (OBJ_MINVOL, OBJ_MAXRET):
-        metric = "return" if objective == OBJ_MINVOL else "vol"
-        label = ("Target return %" if metric == "return"
-                 else "Volatility budget %")
-        cache_key = (
-            tuple(opt_lines),
-            tuple(np.round(opt_mu, 10)), tuple(np.round(opt_vols, 10)),
-            float(np.round(opt_cov.sum(), 10)), float(np.round(np.trace(opt_cov), 10)),
-            tuple(sorted((k, round(v[0], 8), round(v[1], 8))
-                         for k, v in limits.sleeve_band.items())),
-            round(float(floor_pct), 6), round(float(cap_pct), 6),
-            bool(is_universe), metric,
-        )
-        with target_slot:
+        target_pct = budget_pct = None
+        if objective in (OBJ_MINVOL, OBJ_MAXRET):
+            metric = "return" if objective == OBJ_MINVOL else "vol"
+            label = ("Return you want (average per year)" if metric == "return"
+                     else "Most yearly swings you'll accept")
+            cache_key = (
+                tuple(opt_lines),
+                tuple(np.round(opt_mu, 10)), tuple(np.round(opt_vols, 10)),
+                float(np.round(opt_cov.sum(), 10)),
+                float(np.round(np.trace(opt_cov), 10)),
+                tuple(sorted((k, round(v[0], 8), round(v[1], 8))
+                             for k, v in limits.sleeve_band.items())),
+                round(float(floor_pct), 6), round(float(cap_pct), 6),
+                bool(is_universe), metric,
+            )
+            with target_slot:
+                try:
+                    span = feasible_span(metric, cache_key, opt_mu, opt_cov, limits)
+                except opt.Infeasible as e:
+                    span = None
+                    st.error(f"**These limits cannot all be met.** {e}")
+                except Exception as e:
+                    span = None
+                    st.error(f"**Could not work out the possible range.** "
+                             f"{type(e).__name__}: {e}")
+
+                if span is not None:
+                    lo_pp, hi_pp = [x * 100 for x in
+                                    opt.slider_bounds(span, STEP_PP / 100.0)]
+                    if span.degenerate or hi_pp - lo_pp < STEP_PP / 2:
+                        st.info(f"Your limits leave only one possible "
+                                f"{'return' if metric == 'return' else 'risk level'}"
+                                f": **{lo_pp:.2f}%**. Loosen a limit under "
+                                f"*Advanced limits* to open a range.")
+                        chosen = lo_pp
+                    else:
+                        key = f"opt_target_{metric}"
+                        if key in st.session_state:
+                            st.session_state[key] = float(
+                                np.clip(st.session_state[key], lo_pp, hi_pp))
+                        else:
+                            seed_v = cur_r_pct if metric == "return" else cur_v_pct
+                            st.session_state[key] = float(
+                                np.clip(round(seed_v, 2), lo_pp, hi_pp))
+                        tc1, tc2 = st.columns([1, 1.2], gap="large")
+                        chosen = tc1.slider(
+                            label, min_value=float(lo_pp), max_value=float(hi_pp),
+                            step=STEP_PP, format="%.2f%%", key=key,
+                            help="Only what your limits make possible is offered. "
+                                 "Returns here are the average-year (arithmetic) "
+                                 "figure the optimizer works with.")
+                        with tc2:
+                            st.markdown(
+                                f'<div class="muted">Possible range with your limits. '
+                                f'▲ marks your mix today '
+                                f'({cur_r_pct if metric == "return" else cur_v_pct:.2f}%).'
+                                f'</div>', unsafe_allow_html=True)
+                            st.altair_chart(
+                                range_strip(span, chosen, metric,
+                                            cur_r_pct if metric == "return"
+                                            else cur_v_pct),
+                                width='stretch')
+                    if metric == "return":
+                        target_pct = chosen
+                    else:
+                        budget_pct = chosen
+
+        run_opt = st.button("Suggest a mix", type="primary", icon=":material/auto_awesome:")
+
+        if run_opt:
+            n_pts = 24 if is_universe else 60
+            spinner_msg = (f"Searching {n_lines} asset classes — about 20 seconds…"
+                           if is_universe else "Searching for the best mix…")
             try:
-                span = feasible_span(metric, cache_key, opt_mu, opt_cov, limits)
+                with st.spinner(spinner_msg):
+                    w0 = opt.feasible_start(limits)          # raises Infeasible
+                    frontier = opt.efficient_frontier(opt_mu, opt_cov, limits, w0,
+                                                      n_pts)
+                    rf = rf_pct / 100.0
+                    if objective == OBJ_SHARPE:
+                        if is_universe:
+                            w_opt, _ = uni.tangency_on_frontier(
+                                opt_mu, opt_cov, limits, frontier, rf)
+                        else:
+                            w_opt, _, _, _ = opt.max_sharpe(
+                                opt_mu, opt_cov, limits, w0, rf)
+                        note = None
+                    elif objective == OBJ_GROWTH:
+                        r_ = opt.max_growth(opt_mu, opt_cov, limits, w0)
+                        w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                    elif objective == OBJ_MINVOL:
+                        r_ = opt.min_variance(opt_mu, opt_cov, limits, w0,
+                                              target_return=target_pct / 100.0)
+                        w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                    else:
+                        r_ = opt.max_return(opt_mu, opt_cov, limits, w0,
+                                            vol_budget=budget_pct / 100.0)
+                        w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                    w_opt = np.clip(np.asarray(w_opt, dtype=float),
+                                    limits.lower, limits.upper)
+                    w_opt = w_opt / w_opt.sum()
+                    band = opt.stability(opt_mu, opt_cov, limits, rf) \
+                        if show_stability else (None, None)
+                st.session_state.opt_result = {
+                    "lines": opt_lines, "cats": opt_cats, "w": w_opt,
+                    "frontier": frontier, "rf": rf, "objective": objective,
+                    "note": note, "stability": band,
+                    "cur_w": cur_w.copy(), "mode": mode,
+                    "universe": is_universe, "alloc": opt_alloc.copy(),
+                    "target_pct": target_pct, "budget_pct": budget_pct,
+                }
             except opt.Infeasible as e:
-                span = None
-                st.error(f"**These constraints cannot all be satisfied.** {e}")
+                st.session_state.pop("opt_result", None)
+                st.error(f"**These limits cannot all be met.** {e}")
             except Exception as e:
-                span = None
-                st.error(f"**Could not work out the achievable range.** "
+                st.session_state.pop("opt_result", None)
+                st.error(f"**The model could not find a solution.** "
                          f"{type(e).__name__}: {e}")
 
-            if span is not None:
-                lo_pp, hi_pp = [x * 100 for x in
-                                opt.slider_bounds(span, STEP_PP / 100.0)]
-                if span.degenerate or hi_pp - lo_pp < STEP_PP / 2:
-                    # st.slider RAISES when min_value == max_value, and
-                    # constraints that pin the portfolio are reachable — a cash
-                    # floor at the top of the FI band, or per-line caps summing
-                    # near 100%. This branch is not defensive padding.
-                    st.info(f"These constraints pin the portfolio to a single "
-                            f"{'return' if metric == 'return' else 'volatility'} "
-                            f"of **{lo_pp:.2f}%**. Widen a band to open a range.")
-                    chosen = lo_pp
-                else:
-                    key = f"opt_target_{metric}"
-                    # Clamp BEFORE the widget exists: bands change between
-                    # reruns, and a stored value outside the new bounds makes
-                    # st.slider raise StreamlitAPIException.
-                    if key in st.session_state:
-                        st.session_state[key] = float(
-                            np.clip(st.session_state[key], lo_pp, hi_pp))
-                    else:
-                        seed_v = cur_r_pct if metric == "return" else cur_v_pct
-                        st.session_state[key] = float(
-                            np.clip(round(seed_v, 2), lo_pp, hi_pp))
-                    chosen = st.slider(
-                        label, min_value=float(lo_pp), max_value=float(hi_pp),
-                        step=STEP_PP, format="%.2f%%", key=key,
-                        help="Only the achievable range is offered, given the "
-                             "cash floor, per-line cap and category bands below. "
-                             "Returns here are ARITHMETIC (g + σ²/2), which is "
-                             "what mean-variance optimizes on — for AC World "
-                             "Equity that is 105bp above the compound figure in "
-                             "the allocation table.")
-                    st.altair_chart(
-                        range_strip(span, lo_pp, hi_pp, chosen, metric,
-                                    cur_r_pct if metric == "return" else cur_v_pct),
-                        width='stretch')
-                    st.caption(
-                        f"Achievable {'return' if metric == 'return' else 'volatility'}: "
-                        f"**{span.lo*100:.2f}% – {span.hi*100:.2f}%**. "
-                        f"The two ends are the same efficient frontier read on "
-                        f"its two axes — the range is set by the constraints "
-                        f"below, so widening a band widens this.")
-                if metric == "return":
-                    target_pct = chosen
-                else:
-                    budget_pct = chosen
+        # ------------------------------------------------------------------
+        # Results
+        # ------------------------------------------------------------------
+        R = st.session_state.get("opt_result")
+        if R and R["lines"] == opt_lines:
+            w_opt = R["w"]
+            rf = R["rf"]
+            if R.get("note"):
+                st.warning(f"The search did not fully settle — this is the best "
+                           f"mix it reached, not a proven optimum. ({R['note']})")
 
-    run_opt = st.button("Run optimization", type="primary")
+            r_opt, v_opt = opt.portfolio(w_opt, opt_mu, opt_cov)
+            r_cur, v_cur = opt.portfolio(cur_w, opt_mu, opt_cov)
+            sh_opt = opt.sharpe(w_opt, opt_mu, opt_cov, rf)
+            sh_cur = opt.sharpe(cur_w, opt_mu, opt_cov, rf)
 
-    # ----------------------------------------------------------------------
-    # Solve. Never on a keystroke — the frontier is dozens of quadratic
-    # programs and the PM is usually mid-typing. Only on an explicit click.
-    #
-    # ONE frontier, not three. Over the sleeves every QP costs about a
-    # millisecond, so the old path could afford to solve a 60-point frontier
-    # for the chart and then let max_sharpe() solve its own all over again.
-    # At 58 lines a single QP costs about a SECOND — measured at ~31 solver
-    # iterations each, all converging — so that same path would be roughly 180
-    # solves, or three minutes. Across the catalogue the frontier is solved
-    # once at a coarser grid and the tangency portfolio is refined on that
-    # same frontier by universe.tangency_on_frontier(), which agrees with
-    # max_sharpe() to about 1e-6 in Sharpe for a tenth of the solves.
-    # ----------------------------------------------------------------------
-    if run_opt:
-        # `limits` is built above, shared with the slider. Do not rebuild it
-        # here — the slider's ends must come from the same constraint set the
-        # solver uses.
-        n_pts = 24 if is_universe else 60
-        spinner_msg = (f"Solving {n_lines} lines — about 20 seconds…"
-                       if is_universe else "Solving…")
-        try:
-            with st.spinner(spinner_msg):
-                w0 = opt.feasible_start(limits)          # raises Infeasible
-                frontier = opt.efficient_frontier(opt_mu, opt_cov, limits, w0,
-                                                  n_pts)
-                rf = rf_pct / 100.0
-                if objective == OBJ_SHARPE:
-                    if is_universe:
-                        w_opt, _ = uni.tangency_on_frontier(
-                            opt_mu, opt_cov, limits, frontier, rf)
-                    else:
-                        w_opt, _, _, _ = opt.max_sharpe(
-                            opt_mu, opt_cov, limits, w0, rf)
-                    note = None
-                elif objective == OBJ_GROWTH:
-                    r_ = opt.max_growth(opt_mu, opt_cov, limits, w0)
-                    w_opt, note = r_.x, (None if r_.success else str(r_.message))
-                elif objective == OBJ_MINVOL:
-                    r_ = opt.min_variance(opt_mu, opt_cov, limits, w0,
-                                          target_return=target_pct / 100.0)
-                    w_opt, note = r_.x, (None if r_.success else str(r_.message))
-                else:
-                    r_ = opt.max_return(opt_mu, opt_cov, limits, w0,
-                                        vol_budget=budget_pct / 100.0)
-                    w_opt, note = r_.x, (None if r_.success else str(r_.message))
-                w_opt = np.clip(np.asarray(w_opt, dtype=float),
-                                limits.lower, limits.upper)
-                w_opt = w_opt / w_opt.sum()
-                band = opt.stability(opt_mu, opt_cov, limits, rf) \
-                    if show_stability else (None, None)
-            st.session_state.opt_result = {
-                "lines": opt_lines, "cats": opt_cats, "w": w_opt,
-                "frontier": frontier, "rf": rf, "objective": objective,
-                "note": note, "stability": band,
-                "cur_w": cur_w.copy(), "mode": mode,
-                "universe": is_universe, "alloc": opt_alloc.copy(),
-                "target_pct": target_pct, "budget_pct": budget_pct,
-            }
-        except opt.Infeasible as e:
-            st.session_state.pop("opt_result", None)
-            st.error(f"**These constraints cannot all be satisfied.** {e}")
-        except Exception as e:                            # solver blew up
-            st.session_state.pop("opt_result", None)
-            st.error(f"**The optimizer could not solve this.** {type(e).__name__}: {e}")
-
-    # ----------------------------------------------------------------------
-    # Results
-    # ----------------------------------------------------------------------
-    R = st.session_state.get("opt_result")
-    if R and R["lines"] == opt_lines:
-        w_opt = R["w"]
-        rf = R["rf"]
-        if R.get("note"):
-            st.warning(f"The solver did not fully converge — showing the best "
-                       f"feasible point it reached, not a proven optimum. "
-                       f"({R['note']})")
-
-        r_opt, v_opt = opt.portfolio(w_opt, opt_mu, opt_cov)
-        r_cur, v_cur = opt.portfolio(cur_w, opt_mu, opt_cov)
-        sh_opt = opt.sharpe(w_opt, opt_mu, opt_cov, rf)
-        sh_cur = opt.sharpe(cur_w, opt_mu, opt_cov, rf)
-
-        c1, c2 = st.columns(2)
-        c1.markdown(
-            f'<div class="statcard"><div class="statk">Optimal expected return</div>'
-            f'<div class="statv">{r_opt*100:.2f}%</div>'
-            f'<div class="statn">Arithmetic, per annum &nbsp;·&nbsp; '
-            f'{r_opt*100 - r_cur*100:+.2f}pp vs today</div></div>',
-            unsafe_allow_html=True)
-        c2.markdown(
-            f'<div class="statcard"><div class="statk">Optimal volatility</div>'
-            f'<div class="statv">{v_opt*100:.2f}%</div>'
-            f'<div class="statn">Sharpe {sh_opt:.2f} vs {sh_cur:.2f} today</div>'
-            f'</div>', unsafe_allow_html=True)
-        st.write("")
-
-        # ---- frontier chart ------------------------------------------------
-        f_r, f_v, _ = R["frontier"]
-        fdf = pd.DataFrame({"vol": f_v * 100, "ret": f_r * 100})
-        pts = pd.DataFrame([
-            {"vol": v_cur * 100, "ret": r_cur * 100, "what": "Current",
-             "sharpe": sh_cur},
-            {"vol": v_opt * 100, "ret": r_opt * 100, "what": "Optimal",
-             "sharpe": sh_opt}])
-        assets = pd.DataFrame({
-            "vol": opt_vols * 100, "ret": opt_mu * 100,
-            "what": [jpm.LABEL.get(x, x) for x in opt_lines]})
-
-        def _axis(title):
-            return alt.Axis(title=title, labelFont="monospace", labelColor=INK_3,
-                            titleColor=INK_3, gridColor=GRID, labelFontSize=11,
-                            format=".1f")
-
-        x_enc = alt.X("vol:Q", axis=_axis("Volatility % p.a."),
-                      scale=alt.Scale(zero=False, nice=True))
-        y_enc = alt.Y("ret:Q", axis=_axis("Expected return % p.a."),
-                      scale=alt.Scale(zero=False, nice=True))
-
-        layers = [
-            alt.Chart(assets).mark_point(size=42, color=INK_3, opacity=.5,
-                                         filled=True).encode(
-                x=x_enc, y=y_enc,
-                tooltip=[alt.Tooltip("what:N", title="Line"),
-                         alt.Tooltip("ret:Q", format=".2f", title="Return %"),
-                         alt.Tooltip("vol:Q", format=".2f", title="Vol %")]),
-            alt.Chart(fdf).mark_line(color=ACCENT, strokeWidth=2.2).encode(
-                x=x_enc, y=y_enc),
-        ]
-        # capital market line, from (0, rf) through the tangency point
-        if R["objective"] == OBJ_SHARPE and v_opt > 0:
-            v_max = float(max(f_v.max(), v_cur, opt_vols.max())) * 100
-            cml = pd.DataFrame({"vol": [0.0, v_max],
-                                "ret": [rf * 100, rf * 100 + sh_opt * v_max]})
-            layers.append(alt.Chart(cml).mark_line(
-                color=ACCENT, strokeDash=[4, 4], strokeWidth=1,
-                opacity=.65).encode(x=x_enc, y=y_enc))
-        layers.append(
-            alt.Chart(pts).mark_point(size=190, filled=True, opacity=1).encode(
-                x=x_enc, y=y_enc,
-                color=alt.Color("what:N", scale=alt.Scale(
-                    domain=["Current", "Optimal"], range=[BRICK, ACCENT]),
-                    legend=alt.Legend(title=None, orient="top-left")),
-                shape=alt.Shape("what:N", scale=alt.Scale(
-                    domain=["Current", "Optimal"], range=["circle", "diamond"]),
-                    legend=None),
-                tooltip=[alt.Tooltip("what:N", title=""),
-                         alt.Tooltip("ret:Q", format=".2f", title="Return %"),
-                         alt.Tooltip("vol:Q", format=".2f", title="Vol %"),
-                         alt.Tooltip("sharpe:Q", format=".3f", title="Sharpe")]))
-
-        # The constraint the answer was solved under, drawn on the frontier so
-        # the strip in the expander and this chart cannot tell different stories.
-        if R.get("target_pct") is not None:
-            layers.append(alt.Chart(
-                pd.DataFrame([{"ret": float(R["target_pct"]),
-                               "lbl": f"target return {R['target_pct']:.2f}%"}])
-            ).mark_rule(color=INK_3, strokeDash=[3, 3], strokeWidth=1,
-                        opacity=.8).encode(
-                y=alt.Y("ret:Q", scale=alt.Scale(zero=False, nice=True)),
-                tooltip=[alt.Tooltip("lbl:N", title="Constraint")]))
-        if R.get("budget_pct") is not None:
-            layers.append(alt.Chart(
-                pd.DataFrame([{"vol": float(R["budget_pct"]),
-                               "lbl": f"vol budget {R['budget_pct']:.2f}%"}])
-            ).mark_rule(color=INK_3, strokeDash=[3, 3], strokeWidth=1,
-                        opacity=.8).encode(
-                x=alt.X("vol:Q", scale=alt.Scale(zero=False, nice=True)),
-                tooltip=[alt.Tooltip("lbl:N", title="Constraint")]))
-
-        chart = alt.layer(*layers).properties(height=330).configure_view(
-            strokeWidth=0).configure_axis(labelFont="monospace", titleFontSize=11)
-        st.altair_chart(chart, width='stretch')
-        st.caption("Grey dots are the individual LTCMA lines. The line is the "
-                   "efficient frontier under your constraints; the dashed line "
-                   "is the capital market line through the optimum.")
-
-        # ---- caveat, in the app and not only in the code -------------------
-        st.markdown(
-            f'<div style="border-left:3px solid {BRICK};background:#FBF3EF;'
-            f'padding:11px 14px;border-radius:4px;font-size:.82rem;'
-            f'line-height:1.6;margin:.5rem 0 1rem">'
-            f'<b>Read the frontier as a diagnostic, not a target allocation.</b> '
-            f'Mean-variance solutions are highly sensitive to the return '
-            f'assumptions typed above: a 50bp change in one line\'s expected '
-            f'return can move its optimal weight by tens of percentage points. '
-            f'Correlations here are static — they do not rise in a crisis — so '
-            f'the left tail of every portfolio on this chart, including the '
-            f'optimal one, is likely flattered.</div>',
-            unsafe_allow_html=True)
-
-        # ---- weights table -------------------------------------------------
-        p25, p75 = R.get("stability", (None, None))
-
-        if R.get("universe"):
-            # Across the catalogue a flat 58-row table is unreadable, and most
-            # of those rows are solver dust: measured on the Base case with no
-            # cap, 43 lines come back "non-zero" but 35 of them hold under
-            # 0.05% between them. So it reads the way a target allocation
-            # actually reads — the three category totals first, then the lines
-            # inside each one — with everything below the threshold folded
-            # into a residual row rather than dropped, so the columns still
-            # add up to 100%.
-            st.markdown("#### Target allocation by category")
-            cat_df = uni.category_table(opt_cats, cur_w, w_opt)
-            st.dataframe(
-                cat_df, hide_index=True, width='stretch',
-                column_config={
-                    "Category": st.column_config.TextColumn(width="medium"),
-                    "Current %": st.column_config.NumberColumn(format="%.2f"),
-                    "Optimal %": st.column_config.NumberColumn(format="%.2f"),
-                    "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
-                })
-
-            band = None if p25 is None else (p25, p75)
-            tabs = uni.line_tables(opt_lines, opt_cats, cur_w, w_opt, band=band)
-            n_shown = int((w_opt >= uni.DUST_PCT / 100).sum())
-            st.markdown("#### Lines inside each category")
-            st.caption(
-                f"**{n_shown} of {n_lines} lines** carry at least "
-                f"{uni.DUST_PCT:.2f}%. A line already held is listed even "
-                f"where the optimizer takes it to zero — that is the "
-                f"recommendation, not an omission — and everything below the "
-                f"threshold is summed into a single residual row rather than "
-                f"hidden, so each category's lines still add up to its total "
-                f"above.")
-            for cat in cat_df["Category"]:
-                t = tabs.get(cat)
-                if t is None or t.empty:
-                    continue
-                opt_tot = float(cat_df.loc[cat_df["Category"] == cat,
-                                           "Optimal %"].iloc[0])
-                st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;'
-                    f'align-items:baseline;margin:1rem 0 .15rem">'
-                    f'<span style="font-weight:600;font-size:.92rem">{cat}</span>'
-                    f'<span style="font-family:{MONO};font-size:.75rem;'
-                    f'color:{INK_3}">{opt_tot:.2f}% optimal · {len(t)} row'
-                    f'{"s" if len(t) != 1 else ""}</span></div>',
-                    unsafe_allow_html=True)
-                st.dataframe(
-                    t, hide_index=True, width='stretch',
-                    column_config={
-                        "LTCMA line": st.column_config.TextColumn(width="large"),
-                        "Current %": st.column_config.NumberColumn(format="%.2f"),
-                        "Optimal %": st.column_config.NumberColumn(format="%.2f"),
-                        "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
-                    })
-        else:
-            rows = []
-            for i, nm in enumerate(opt_lines):
-                row = {"Category": opt_cats[i],
-                       "LTCMA line": jpm.LABEL.get(nm, nm),
-                       "Current %": cur_w[i] * 100,
-                       "Optimal %": w_opt[i] * 100,
-                       "Change (pp)": (w_opt[i] - cur_w[i]) * 100}
-                if p25 is not None:
-                    row["Stable range %"] = f"{p25[i]*100:.0f} – {p75[i]*100:.0f}"
-                rows.append(row)
-            wdf = pd.DataFrame(rows).reindex(
-                pd.DataFrame(rows)["Change (pp)"].abs()
-                .sort_values(ascending=False).index).reset_index(drop=True)
-
-            sub = []
-            for k, idx in groups.items():
-                r_ = {"Category": k, "LTCMA line": "— category total —",
-                      "Current %": cur_w[idx].sum() * 100,
-                      "Optimal %": w_opt[idx].sum() * 100,
-                      "Change (pp)": (w_opt[idx].sum() - cur_w[idx].sum()) * 100}
-                if p25 is not None:
-                    r_["Stable range %"] = ""
-                sub.append(r_)
-            wdf = pd.concat([wdf, pd.DataFrame(sub)], ignore_index=True)
-
-            st.dataframe(
-                wdf, hide_index=True, width='stretch',
-                column_config={
-                    "Category": st.column_config.TextColumn(width="small"),
-                    "LTCMA line": st.column_config.TextColumn(width="medium"),
-                    "Current %": st.column_config.NumberColumn(format="%.2f"),
-                    "Optimal %": st.column_config.NumberColumn(format="%.2f"),
-                    "Change (pp)": st.column_config.NumberColumn(format="%+.2f"),
-                    "Stable range %": st.column_config.TextColumn(
-                        width="small",
-                        help="Interquartile range of this line's optimal weight "
-                             "across 40 re-solves with expected returns perturbed "
-                             "by N(0, 0.5%). A wide range is not a recommendation."),
-                })
-        if p25 is not None:
-            widest = int(np.argmax(p75 - p25))
-            st.caption(
-                f"**Stability:** across 40 re-solves with each expected return "
-                f"nudged by random noise of 0.5%, the least stable line is "
-                f"**{jpm.LABEL.get(opt_lines[widest], opt_lines[widest])}**, "
-                f"whose optimal weight ranges "
-                f"{p25[widest]*100:.0f}–{p75[widest]*100:.0f}%. Lines with a "
-                f"wide range are an artefact of the return estimates, not a "
-                f"recommendation.")
-
-        # ---- apply + before/after ------------------------------------------
-        # A catalogue optimum is a different SLEEVE LIST, not just different
-        # weights, so it cannot be applied to Base — Base is the deck's six
-        # sleeves with only the weights unlocked, and rewriting that list would
-        # be exactly the thing Base exists to prevent. It is written into
-        # Custom instead, which is where an arbitrary sleeve list belongs, and
-        # the mode switches so the user lands on what they just applied.
-        applied = (uni.applied_sleeves(R["alloc"], w_opt)
-                   if R.get("universe") else None)
-        ac1, ac2 = st.columns([1, 3])
-        btn = ("Apply as Custom sleeves" if R.get("universe")
-               else "Apply optimal weights")
-        if ac1.button(btn, width='stretch'):
+            applied = (uni.applied_sleeves(R["alloc"], w_opt)
+                       if R.get("universe") else None)
             if R.get("universe"):
-                st.session_state.custom_alloc = applied.copy()
-                # NOT `st.session_state.mode = ...` here: `mode` is the
-                # sidebar radio's widget key and that radio has already been
-                # instantiated this run, which makes assigning to it raise
-                # StreamlitAPIException. Park the request and let the top of
-                # the next run apply it before the widget exists.
-                st.session_state.pending_mode = MODE_CUSTOM
-            elif is_base:
-                st.session_state.base_weights = [round(float(x) * 100, 4)
-                                                 for x in w_opt]
+                a_w, a_r, a_v = (applied["Weight %"], applied["Return %"],
+                                 applied["Vol %"])
+                a_corr = corr_of(applied)
             else:
-                ca = st.session_state.custom_alloc.copy()
-                ca["Weight %"] = [round(float(x) * 100, 4) for x in w_opt]
-                st.session_state.custom_alloc = ca
-            # MUST bump: st.data_editor keeps the user's edits as a delta and
-            # re-applies them on top of whatever dataframe it is handed, so a
-            # hand-edited weight cell would snap back over the optimal value.
-            # This is the same failure that once made Normalize produce 94.71%.
-            bump_editors()
-            st.rerun()
+                a_w = [float(x) * 100 for x in w_opt]
+                a_r, a_v, a_corr = alloc["Return %"], alloc["Vol %"], corr_of(alloc)
 
-        # The "after" portfolio. Across the catalogue this is the APPLIED
-        # allocation rather than the raw 58-line vector: the sub-threshold
-        # dust is well under a basis point of weight, and simulating 58
-        # correlated lines for 10,000 paths costs far more than it settles.
-        if R.get("universe"):
-            a_w, a_r, a_v = (applied["Weight %"], applied["Return %"],
-                             applied["Vol %"])
-            a_corr = corr_of(applied)
-        else:
-            a_w = [float(x) * 100 for x in w_opt]
-            a_r, a_v, a_corr = alloc["Return %"], alloc["Vol %"], corr_of(alloc)
+            before = res
+            after = run_sim(tuple(a_w), tuple(a_r), tuple(a_v),
+                            tuple(a_corr.flatten()),
+                            int(paths), int(years), int(seed))[0]
+            b_t, a_t = before.rows[-1], after.rows[-1]
 
-        before = run_sim(tuple(alloc["Weight %"]), tuple(alloc["Return %"]),
-                         tuple(alloc["Vol %"]), tuple(corr_of(alloc).flatten()),
-                         int(paths), int(years), int(seed))[0]
-        after = run_sim(tuple(a_w), tuple(a_r), tuple(a_v),
-                        tuple(a_corr.flatten()),
-                        int(paths), int(years), int(seed))[0]
-        b_t, a_t = before.rows[-1], after.rows[-1]
-        note_txt = (f" Applying replaces the sleeve list with the "
-                    f"{len(applied)} lines above {uni.DUST_PCT:.2f}%, "
-                    f"renormalized to 100%, and switches to Custom."
-                    if R.get("universe") else "")
-        ac2.markdown(
-            f'<div style="font-size:.82rem;line-height:1.75;padding-top:.35rem">'
-            f'<b>If applied</b>, over {years} years: median wealth '
-            f'<b>{b_t["Median x"]:.2f}× → {a_t["Median x"]:.2f}×</b>, '
-            f'P(loss) <b>{b_t["P(loss)"]*100:.2f}% → {a_t["P(loss)"]*100:.2f}%</b>. '
-            f'<span style="color:{INK_3}">Simulated, not analytic — the same '
-            f'Monte Carlo as the rest of the page.{note_txt}</span></div>',
-            unsafe_allow_html=True)
-    elif R:
-        st.info("The allocation or the scope changed since the last run. Press "
-                "**Run optimization** again.")
+            section("Your mix today vs. the suggestion",
+                    f"Goal: <b>{OBJ_PLAIN[R['objective']][0]}</b>. "
+                    f"Outcomes are for {money(amount)} over {T} years.")
 
-# --------------------------------------------------------------------------
-# Run
-# --------------------------------------------------------------------------
-w_t, r_t, v_t, corr_full = sleeve_inputs(alloc)
+            def cmp_card(label, was, now, better, sub):
+                colr = ACCENT if better else (BRICK if better is False else INK)
+                return (f'<div class="card"><div class="lbl">{label}</div>'
+                        f'<div class="val"><span class="was">{was}</span>'
+                        f'<span class="arrow">→</span>'
+                        f'<span style="color:{colr}">{now}</span></div>'
+                        f'<div class="sub">{sub}</div></div>')
 
-with st.spinner("Running simulation…"):
-    res, repaired = run_sim(
-        w_t, r_t, v_t, tuple(corr_full.flatten()),
-        int(paths), int(years), int(seed))
+            def _b(new, old, higher_is_better=True, tol=1e-9):
+                if abs(new - old) < tol:
+                    return None
+                return (new > old) == higher_is_better
 
-if repaired:
-    # Should be unreachable: the published matrix is repaired once at import,
-    # and every principal sub-matrix of a positive semi-definite matrix is
-    # itself positive semi-definite. Kept as a guard, not an expected path.
-    st.warning("The correlation sub-matrix needed a numerical repair before "
-               "simulating. This should not happen with the published J.P. "
-               "Morgan matrix — worth reporting if you see it.")
+            k1, k2, k3, k4 = st.columns(4)
+            k1.markdown(cmp_card(
+                "Typical value", money(b_t["Median x"] * amount),
+                money(a_t["Median x"] * amount),
+                _b(a_t["Median x"], b_t["Median x"]),
+                f"{money((a_t['Median x'] - b_t['Median x']) * amount)} "
+                f"difference after {T} years"), unsafe_allow_html=True)
+            k2.markdown(cmp_card(
+                "Growth per year", pct(b_t["Median"], 2), pct(a_t["Median"], 2),
+                _b(a_t["Median"], b_t["Median"]),
+                "Typical yearly growth"), unsafe_allow_html=True)
+            k3.markdown(cmp_card(
+                "Yearly swings", f"±{pct(v_cur)}", f"±{pct(v_opt)}",
+                _b(v_opt, v_cur, higher_is_better=False),
+                f"Risk level: {risk_level(v_cur)[1]} → {risk_level(v_opt)[1]}"),
+                unsafe_allow_html=True)
+            k4.markdown(cmp_card(
+                "Chance of a loss", pct(b_t["P(loss)"]), pct(a_t["P(loss)"]),
+                _b(a_t["P(loss)"], b_t["P(loss)"], higher_is_better=False),
+                f"Ending below {money(amount)} after {T} years"),
+                unsafe_allow_html=True)
 
-term = res.rows[-1]
+            # ---- donuts: now vs suggested ---------------------------------
+            if R.get("universe"):
+                new_names = [plain_name(x)[0] for x in applied["LTCMA line"]]
+                new_weights = list(applied["Weight %"])
+            else:
+                new_names = ALLOC_NAMES
+                new_weights = [float(x) * 100 for x in w_opt]
+            # Colour follows the holding: same order as the Your mix tab, so a
+            # holding keeps its colour everywhere; new lines are appended.
+            union = list(dict.fromkeys(
+                list(ALLOC_NAMES)
+                + [n for n, w in sorted(zip(new_names, new_weights),
+                                        key=lambda t: -t[1]) if w > 0]))
+            cmp_map = color_map(union)
+            descs = {**ALLOC_DESCS,
+                     **({plain_name(x)[0]: plain_name(x)[1]
+                         for x in applied["LTCMA line"]} if applied is not None else {})}
 
-# st.metric's delta slot always draws an up/down arrow, which would imply a
-# change against a prior period that does not exist here. Captions instead.
-stat_cols = st.columns(4)
-STATS = [
-    ("Expected return", f"{res.exp_arith*100:.2f}%", "Arithmetic, per annum"),
-    ("Portfolio volatility", f"{res.analytic_vol*100:.2f}%",
-     f"Simulated {res.sim_vol*100:.2f}%"),
-    (f"Median wealth · {term['_years']}y", f"{term['Median x']:.2f}×",
-     f"{term['Median']*100:.2f}% annualized"),
-    (f"P(loss) · {term['_years']}y", f"{term['P(loss)']*100:.2f}%",
-     "Below 1.00× at horizon end"),
-]
-for col, (label, value, note) in zip(stat_cols, STATS):
-    hot = " hot" if (label.startswith("P(loss)") and term["P(loss)"] > 0.05) else ""
-    col.markdown(
-        f'<div class="statcard"><div class="statk">{label}</div>'
-        f'<div class="statv{hot}">{value}</div>'
-        f'<div class="statn">{note}</div></div>', unsafe_allow_html=True)
+            st.write("")
+            dl, dr, dc = st.columns([1, 1, 1.35], gap="large")
+            now_df = holdings_frame(ALLOC_NAMES, list(alloc["Weight %"]), cmp_map)
+            new_df = holdings_frame(new_names, new_weights, cmp_map)
+            with dl:
+                st.markdown('<div class="sect" style="margin-top:.4rem">Today</div>',
+                            unsafe_allow_html=True)
+                ch = donut(now_df, pct(v_cur), "yearly swings", size=210)
+                if ch is not None:
+                    st.altair_chart(ch, width='content')
+            with dr:
+                st.markdown('<div class="sect" style="margin-top:.4rem;color:'
+                            f'{ACCENT_DK}">Suggested</div>', unsafe_allow_html=True)
+                ch = donut(new_df, pct(v_opt), "yearly swings", size=210)
+                if ch is not None:
+                    st.altair_chart(ch, width='content')
+            with dc:
+                leg = pd.DataFrame([{"name": n, "color": c} for n, c in
+                                    list(cmp_map.items())
+                                    + ([("Other", OTHER_COLOR)]
+                                       if len(union) > len(cmp_map) else [])])
+                nw = dict(zip(new_df["name"], new_df["w"]))
+                held = set(now_df.loc[now_df["w"] >= 0.05, "name"])
+                leg["w"] = [nw.get(n, 0.0) for n in leg["name"]]
+                # hide holdings that are empty both today and in the suggestion
+                leg = leg[(leg["w"] >= 0.05) | leg["name"].isin(held)]
+                st.markdown('<div class="muted" style="margin:.5rem 0 .2rem">'
+                            'Suggested shares</div>', unsafe_allow_html=True)
+                st.markdown(legend_html(leg, descs), unsafe_allow_html=True)
+
+            # ---- what changes ---------------------------------------------
+            section("What would change",
+                    "Percentage points of the portfolio moved into (blue) or out of "
+                    "(orange) each holding.")
+            if R.get("universe"):
+                chg_names = [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]
+                chg = change_chart(chg_names, cur_w, w_opt)
+            else:
+                chg = change_chart(ALLOC_NAMES, cur_w, w_opt)
+            if chg is None:
+                st.info("Your current mix already meets this goal — no changes "
+                        "suggested.")
+            else:
+                st.altair_chart(chg, width='stretch')
+
+            # ---- apply ----------------------------------------------------
+            ac1, ac2 = st.columns([1, 2.5], vertical_alignment="center")
+            btn = ("Use this mix (switches to Custom)" if R.get("universe")
+                   else "Use this mix")
+            if ac1.button(btn, type="primary", width='stretch', icon=":material/check:"):
+                if R.get("universe"):
+                    st.session_state.custom_alloc = applied.copy()
+                    st.session_state.pending_mode = MODE_CUSTOM
+                elif is_base:
+                    st.session_state.base_weights = [round(float(x) * 100, 4)
+                                                     for x in w_opt]
+                else:
+                    ca = st.session_state.custom_alloc.copy()
+                    ca["Weight %"] = [round(float(x) * 100, 4) for x in w_opt]
+                    st.session_state.custom_alloc = ca
+                # MUST bump — see bump_editors().
+                bump_editors()
+                st.rerun()
+            ac2.markdown(
+                '<div class="muted">Replaces the mix on the <b>Your mix</b> tab. '
+                'You can always go back with <i>Reset</i> there.'
+                + (f" Holdings under {uni.DUST_PCT:.2f}% are dropped and the rest "
+                   f"scaled to 100%." if R.get("universe") else "")
+                + '</div>', unsafe_allow_html=True)
+
+            st.write("")
+            st.markdown(
+                '<div class="note"><b>Treat this as a starting point for a '
+                'conversation, not a final answer.</b> The suggestion is very '
+                'sensitive to the return assumptions — a small change in one '
+                'forecast can shift the mix a lot — and the model assumes '
+                'investments keep moving together the way they normally do, '
+                'which often fails in a crisis.</div>', unsafe_allow_html=True)
+
+            # ---- for the analyst ------------------------------------------
+            with st.expander("Risk/return map (efficient frontier)"):
+                f_r, f_v, _ = R["frontier"]
+                fdf = pd.DataFrame({"vol": f_v * 100, "ret": f_r * 100})
+                pts = pd.DataFrame([
+                    {"vol": v_cur * 100, "ret": r_cur * 100, "what": "Today",
+                     "sharpe": sh_cur},
+                    {"vol": v_opt * 100, "ret": r_opt * 100, "what": "Suggested",
+                     "sharpe": sh_opt}])
+                assets = pd.DataFrame({
+                    "vol": opt_vols * 100, "ret": opt_mu * 100,
+                    "what": [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]})
+
+                def _axis(title):
+                    return alt.Axis(title=title, labelColor=INK_3, titleColor=INK_3,
+                                    gridColor=GRID, labelFontSize=11, format=".0f",
+                                    titleFontWeight=400, domain=False)
+
+                x_enc = alt.X("vol:Q", axis=_axis("Yearly swings (volatility) %"),
+                              scale=alt.Scale(zero=True, nice=True))
+                y_enc = alt.Y("ret:Q", axis=_axis("Average return per year %"),
+                              scale=alt.Scale(zero=False, nice=True))
+                layers = [
+                    alt.Chart(assets).mark_circle(size=50, color=INK_3,
+                                                  opacity=.45).encode(
+                        x=x_enc, y=y_enc,
+                        tooltip=[alt.Tooltip("what:N", title="Holding"),
+                                 alt.Tooltip("ret:Q", format=".2f", title="Return %"),
+                                 alt.Tooltip("vol:Q", format=".2f", title="Swings %")]),
+                    alt.Chart(fdf).mark_line(color=ACCENT, strokeWidth=2).encode(
+                        x=x_enc, y=y_enc),
+                ]
+                if R["objective"] == OBJ_SHARPE and v_opt > 0:
+                    v_max = float(max(f_v.max(), v_cur, opt_vols.max())) * 100
+                    cml = pd.DataFrame({"vol": [0.0, v_max],
+                                        "ret": [rf * 100, rf * 100 + sh_opt * v_max]})
+                    layers.append(alt.Chart(cml).mark_line(
+                        color=ACCENT, strokeDash=[4, 4], strokeWidth=1,
+                        opacity=.6).encode(x=x_enc, y=y_enc))
+                if R.get("target_pct") is not None:
+                    layers.append(alt.Chart(pd.DataFrame(
+                        [{"ret": float(R["target_pct"])}])).mark_rule(
+                        color=INK_3, strokeDash=[3, 3]).encode(y="ret:Q"))
+                if R.get("budget_pct") is not None:
+                    layers.append(alt.Chart(pd.DataFrame(
+                        [{"vol": float(R["budget_pct"])}])).mark_rule(
+                        color=INK_3, strokeDash=[3, 3]).encode(x="vol:Q"))
+                layers.append(
+                    alt.Chart(pts).mark_point(size=200, filled=True, opacity=1,
+                                              stroke="white", strokeWidth=2).encode(
+                        x=x_enc, y=y_enc,
+                        color=alt.Color("what:N", scale=alt.Scale(
+                            domain=["Today", "Suggested"], range=[INK_3, ACCENT]),
+                            legend=alt.Legend(title=None, orient="top-left")),
+                        shape=alt.Shape("what:N", scale=alt.Scale(
+                            domain=["Today", "Suggested"],
+                            range=["circle", "diamond"]), legend=None),
+                        tooltip=[alt.Tooltip("what:N", title=""),
+                                 alt.Tooltip("ret:Q", format=".2f", title="Return %"),
+                                 alt.Tooltip("vol:Q", format=".2f", title="Swings %"),
+                                 alt.Tooltip("sharpe:Q", format=".3f",
+                                             title="Sharpe")]))
+                st.altair_chart(alt.layer(*layers).properties(height=340)
+                                .configure_view(strokeWidth=0), width='stretch')
+                st.caption(
+                    "Grey dots are the individual asset classes. The line shows the "
+                    "best possible return for each level of risk under your limits "
+                    "(the efficient frontier); the dashed line is the capital market "
+                    f"line. Sharpe ratio: {sh_cur:.2f} today → {sh_opt:.2f} "
+                    f"suggested. Returns here are arithmetic: "
+                    f"{r_cur*100:.2f}% → {r_opt*100:.2f}%.")
+
+            with st.expander("Exact numbers"):
+                p25, p75 = R.get("stability", (None, None))
+                pct_cfg = {
+                    "Current %": st.column_config.NumberColumn("Today %", format="%.2f"),
+                    "Optimal %": st.column_config.NumberColumn("Suggested %",
+                                                               format="%.2f"),
+                    "Change (pp)": st.column_config.NumberColumn("Change (pts)",
+                                                                 format="%+.2f"),
+                }
+                if R.get("universe"):
+                    cat_df = uni.category_table(opt_cats, cur_w, w_opt)
+                    st.markdown("**By asset class**")
+                    st.dataframe(cat_df, hide_index=True, width='stretch',
+                                 column_config={"Category": st.column_config.TextColumn(
+                                     "Asset class", width="medium"), **pct_cfg})
+                    tabs_ = uni.line_tables(opt_lines, opt_cats, cur_w, w_opt,
+                                            band=None if p25 is None else (p25, p75))
+                    for cat in cat_df["Category"]:
+                        t = tabs_.get(cat)
+                        if t is None or t.empty:
+                            continue
+                        st.markdown(f"**{cat}**")
+                        st.dataframe(t, hide_index=True, width='stretch',
+                                     column_config={"LTCMA line": st.column_config
+                                                    .TextColumn("Investment",
+                                                                width="large"),
+                                                    **pct_cfg})
+                    st.caption(f"Lines under {uni.DUST_PCT:.2f}% are summed into a "
+                               f"single residual row so each table still adds up.")
+                else:
+                    rows = []
+                    for i, nm in enumerate(opt_lines):
+                        row = {"Holding": plain_name(jpm.LABEL.get(nm, nm))[0],
+                               "LTCMA line": jpm.LABEL.get(nm, nm),
+                               "Current %": cur_w[i] * 100,
+                               "Optimal %": w_opt[i] * 100,
+                               "Change (pp)": (w_opt[i] - cur_w[i]) * 100}
+                        if p25 is not None:
+                            row["Stable range %"] = (f"{p25[i]*100:.0f} – "
+                                                     f"{p75[i]*100:.0f}")
+                        rows.append(row)
+                    st.dataframe(pd.DataFrame(rows), hide_index=True,
+                                 width='stretch',
+                                 column_config={"LTCMA line": st.column_config
+                                                .TextColumn("J.P. Morgan line"),
+                                                **pct_cfg})
+                if p25 is not None:
+                    widest = int(np.argmax(p75 - p25))
+                    st.caption(
+                        f"**Stability:** across 40 re-solves with each expected "
+                        f"return nudged by 0.5%, the least stable holding is "
+                        f"**{plain_name(jpm.LABEL.get(opt_lines[widest], opt_lines[widest]))[0]}**"
+                        f", whose suggested share ranges "
+                        f"{p25[widest]*100:.0f}–{p75[widest]*100:.0f}%. A wide range "
+                        f"means the suggestion for that holding is not reliable.")
+        elif R:
+            st.info("Your mix or the search options changed since the last "
+                    "suggestion. Press **Suggest a mix** again.")
 
 
-# --------------------------------------------------------------------------
-# Fan chart
-# --------------------------------------------------------------------------
-st.markdown("## Wealth fan chart")
+# ==========================================================================
+# TAB — Details & saved runs
+# ==========================================================================
+with tab_det:
+    section("How the range of outcomes changes with time",
+            f"Value of {money(amount)} after each period. The thick bar holds half "
+            f"of all futures; the thin bar holds 9 in 10; the dot is the typical "
+            f"outcome.")
+    rr = pd.DataFrame(res.rows)
+    rng_df = pd.DataFrame({
+        "h": rr["Horizon"],
+        "lo": rr["5th x"] * amount, "hi": rr["95th x"] * amount,
+        "med": rr["Median x"] * amount,
+        "q1": (1 + rr["25th"]) ** rr["_years"] * amount,
+        "q3": (1 + rr["75th"]) ** rr["_years"] * amount,
+    })
+    for c in ("lo", "hi", "med", "q1", "q3"):
+        rng_df[c + "_l"] = rng_df[c].map(money)
+    order = list(rng_df["h"])
+    yh = alt.Y("h:N", sort=order, title=None,
+               axis=alt.Axis(labelFontSize=12, labelColor=INK, domain=False,
+                             ticks=False, labelPadding=10))
+    xh = alt.X("lo:Q", title=None, scale=alt.Scale(zero=False, nice=True),
+               axis=alt.Axis(format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                             domain=False, ticks=False))
+    tip = [alt.Tooltip("h:N", title="After"),
+           alt.Tooltip("hi_l:N", title="Strong markets"),
+           alt.Tooltip("q3_l:N", title="Better half starts"),
+           alt.Tooltip("med_l:N", title="Typical"),
+           alt.Tooltip("q1_l:N", title="Weaker half ends"),
+           alt.Tooltip("lo_l:N", title="Weak markets")]
+    rb = alt.Chart(rng_df)
+    wide = rb.mark_bar(height=8, color=BAND_OUTER, cornerRadius=4).encode(
+        y=yh, x=xh, x2="hi:Q", tooltip=tip)
+    mid = rb.mark_bar(height=18, color=BAND_INNER, cornerRadius=4).encode(
+        y=alt.Y("h:N", sort=order), x="q1:Q", x2="q3:Q", tooltip=tip)
+    med = rb.mark_circle(size=110, color=ACCENT_DK, stroke="white",
+                         strokeWidth=2, opacity=1).encode(
+        y=alt.Y("h:N", sort=order), x="med:Q", tooltip=tip)
+    medt = rb.mark_text(dy=-18, fontSize=12, fontWeight=700, color=ACCENT_DK).encode(
+        y=alt.Y("h:N", sort=order), x="med:Q", text="med_l:N")
+    start_r = alt.Chart(pd.DataFrame({"x": [amount]})).mark_rule(
+        color=INK_3, strokeDash=[4, 4]).encode(x="x:Q")
+    st.altair_chart((wide + mid + start_r + med + medt).properties(
+        height=max(64 * len(rng_df), 140)).configure_view(strokeWidth=0),
+        width='stretch')
 
-fan = pd.DataFrame(res.fan, columns=["p05", "p25", "p50", "p75", "p95"])
-fan["Year"] = res.fan_years
-for c in ("p05", "p25", "p50", "p75", "p95"):
-    fan[c + "_lbl"] = fan[c].map(lambda v: f"{v:.3f}×")
-
-log_scale = st.checkbox("Log scale", value=False)
-yscale = alt.Scale(type="log", nice=False) if log_scale else alt.Scale(zero=False, nice=True)
-
-axis_y = alt.Axis(title="Portfolio value (multiple of start)", format=".2f",
-                  labelFont="monospace", labelColor=INK_3, titleColor=INK_3,
-                  gridColor=GRID, domain=False, tickCount=6, labelFontSize=11)
-axis_x = alt.Axis(title="Years from today", titleColor=INK_3,
-                  labelFont="monospace", labelColor=INK_3,
-                  grid=False, tickCount=min(res.years, 10), labelFontSize=11)
-
-base_c = alt.Chart(fan)
-outer = base_c.mark_area(color=BAND_OUTER).encode(
-    x=alt.X("Year:Q", axis=axis_x, scale=alt.Scale(nice=False)),
-    y=alt.Y("p05:Q", axis=axis_y, scale=yscale), y2="p95:Q")
-inner = base_c.mark_area(color=BAND_INNER).encode(
-    x="Year:Q", y=alt.Y("p25:Q", scale=yscale), y2="p75:Q")
-breakeven = alt.Chart(pd.DataFrame({"y": [1.0]})).mark_rule(
-    color=INK_3, strokeDash=[3, 3], opacity=.7, size=1).encode(y=alt.Y("y:Q", scale=yscale))
-median = base_c.mark_line(color=ACCENT, strokeWidth=2).encode(
-    x="Year:Q", y=alt.Y("p50:Q", scale=yscale))
-
-hover = alt.selection_point(fields=["Year"], nearest=True, on="pointerover",
-                            empty=False, clear="pointerout")
-rule = base_c.mark_rule(color=INK_3, strokeDash=[3, 3]).encode(
-    x="Year:Q",
-    opacity=alt.condition(hover, alt.value(0.8), alt.value(0)),
-    tooltip=[alt.Tooltip("Year:Q", format=".2f"),
-             alt.Tooltip("p95_lbl:N", title="95th"),
-             alt.Tooltip("p75_lbl:N", title="75th"),
-             alt.Tooltip("p50_lbl:N", title="Median"),
-             alt.Tooltip("p25_lbl:N", title="25th"),
-             alt.Tooltip("p05_lbl:N", title="5th")],
-).add_params(hover)
-dot = base_c.mark_point(color=ACCENT, filled=True, size=60).encode(
-    x="Year:Q", y=alt.Y("p50:Q", scale=yscale),
-    opacity=alt.condition(hover, alt.value(1), alt.value(0)))
-
-chart = (outer + inner + breakeven + median + rule + dot).properties(height=400)
-chart = chart.configure_view(strokeWidth=0).configure_axis(
-    labelFont="monospace", titleFontSize=11)
-st.altair_chart(chart, width='stretch')
-
-lg1, lg2, lg3, lg4 = st.columns([1.3, 1.3, 1, 3])
-for col, colr, lbl in ((lg1, BAND_OUTER, "5th – 95th percentile"),
-                       (lg2, BAND_INNER, "25th – 75th percentile"),
-                       (lg3, ACCENT, "Median path")):
-    col.markdown(
-        f'<div style="font-size:.78rem;display:flex;align-items:center;gap:7px">'
-        f'<span style="width:14px;height:10px;border-radius:2px;background:{colr};'
-        f'display:inline-block"></span>{lbl}</div>', unsafe_allow_html=True)
-lg4.markdown(f'<div class="foot" style="text-align:right">'
-             f'{res.paths:,} paths · {res.elapsed_ms:.0f} ms</div>',
-             unsafe_allow_html=True)
-
-
-# --------------------------------------------------------------------------
-# Results table
-# --------------------------------------------------------------------------
-st.markdown("## Annualized return percentiles")
-
-df = pd.DataFrame(res.rows).drop(columns=["_years"])
-pct_cols = ["5th", "25th", "Median", "75th", "95th", "Mean", "P(loss)"]
-x_cols = ["Median x", "5th x", "95th x"]
-
-# format="percent" trims trailing zeros (10.00% renders as "10%"), which
-# breaks the decimal alignment across the row. Scale to percent points and
-# format explicitly instead.
-disp = df.copy()
-for c in pct_cols:
-    disp[c] = disp[c] * 100
-
-st.dataframe(
-    disp, hide_index=True, width='stretch',
-    column_config={
-        "Horizon": st.column_config.TextColumn(width="small"),
-        **{c: st.column_config.NumberColumn(c, format="%.2f%%") for c in pct_cols},
-        **{c: st.column_config.NumberColumn(c.replace(" x", " ×"), format="%.3f")
-           for c in x_cols},
-    },
-)
-
-csv = disp.round(4).to_csv(index=False)
-d1, d2 = st.columns([1, 4])
-d1.download_button("Download CSV", csv,
-                   f"keepp_monte_carlo_{'base' if is_base else 'custom'}.csv",
-                   "text/csv", width='stretch')
-d2.markdown(
-    f'<div class="foot" style="padding-top:.5rem">'
-    f'<b>{"Base · JPM 2026 LTCMA" if is_base else "Custom assumptions"}</b> · '
-    f'{res.paths:,} paths · {len(alloc)} sleeves · {res.years}-year horizon · '
-    f'seed {seed} · monthly rebalancing. P(loss) is the probability the portfolio sits below its starting '
-    f'value at the end of the horizon; the × columns are wealth multiples on a '
-    f'1.00× start.</div>', unsafe_allow_html=True)
-
-
-# --------------------------------------------------------------------------
-# Saved runs — capture the current run into a session-only history, then
-# export the whole history as one Excel workbook. All the record-building,
-# table-shaping and .xlsx writing lives in run_store.py; this block is UI
-# only, exactly like the Optimizer section above.
-# --------------------------------------------------------------------------
-st.markdown("## Saved runs")
-st.caption(
-    "**Save this run** snapshots the current allocation and results into a "
-    "list held for this browser session — nothing is written to disk until "
-    "you download it. Each save adds one row below and one sheet to the "
-    "Excel export.")
-
-saved = st.session_state.saved_runs
-next_seq = len(saved) + 1
-default_label = rs.auto_label(next_seq, "Base" if is_base else "Custom", years)
-
-sc1, sc2, sc3 = st.columns([2.4, 1, 1])
-label_in = sc1.text_input("Label", value=default_label, key=f"run_label_{NONCE}",
-                          label_visibility="collapsed",
-                          placeholder="Label this run…")
-if sc2.button("Save this run", width='stretch'):
-    st.session_state.saved_runs.append(rs.make_record(
-        next_seq, label_in, "Base" if is_base else "Custom",
-        alloc, paths, years, seed, res))
-    bump_editors()
-    st.rerun()
-if sc3.button("Clear history", width='stretch', disabled=not saved):
-    st.session_state.saved_runs = []
-    st.rerun()
-
-if saved:
-    hist_df = rs.history_table(saved)
+    section("The full numbers", "Growth per year at different points in the range "
+            "of outcomes (5th percentile = only 1 in 20 futures does worse).")
+    df = pd.DataFrame(res.rows).drop(columns=["_years"])
+    pct_cols = ["5th", "25th", "Median", "75th", "95th", "Mean", "P(loss)"]
+    x_cols = ["Median x", "5th x", "95th x"]
+    disp = df.copy()
+    for c in pct_cols:
+        disp[c] = disp[c] * 100
+    NICE = {"5th": "Weak (5th)", "25th": "25th", "Median": "Typical (median)",
+            "75th": "75th", "95th": "Strong (95th)", "Mean": "Average",
+            "P(loss)": "Chance of loss", "Median x": "Typical ×",
+            "5th x": "Weak ×", "95th x": "Strong ×"}
     st.dataframe(
-        hist_df, hide_index=True, width='stretch',
+        disp, hide_index=True, width='stretch',
         column_config={
-            "#": st.column_config.NumberColumn(width="small"),
-            "Label": st.column_config.TextColumn(width="medium"),
-            "Saved": st.column_config.TextColumn(width="medium"),
-            "Return %": st.column_config.NumberColumn(format="%.2f"),
-            "Volatility %": st.column_config.NumberColumn(format="%.2f"),
-            "Median wealth": st.column_config.NumberColumn(format="%.3f×"),
-            "P(loss) %": st.column_config.NumberColumn(format="%.2f"),
+            "Horizon": st.column_config.TextColumn("After", width="small"),
+            **{c: st.column_config.NumberColumn(NICE[c], format="%.2f%%")
+               for c in pct_cols},
+            **{c: st.column_config.NumberColumn(
+                NICE[c], format="%.3f",
+                help="Multiple of the starting amount (1.00 = break-even).")
+               for c in x_cols},
         })
-    st.download_button(
-        f"Download Excel ({len(saved)} run{'s' if len(saved) != 1 else ''})",
-        rs.to_excel_bytes(saved),
-        "keepp_saved_runs.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-else:
-    st.caption("No runs saved yet this session.")
 
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(card("Average return / yr", pct(res.exp_arith, 2),
+                     "Arithmetic, per annum"), unsafe_allow_html=True)
+    m2.markdown(card("Volatility", pct(res.analytic_vol, 2),
+                     f"Simulated {pct(res.sim_vol, 2)}"), unsafe_allow_html=True)
+    m3.markdown(card("Simulated futures", f"{res.paths:,}",
+                     f"{res.elapsed_ms:.0f} ms · seed {seed}"), unsafe_allow_html=True)
+    m4.markdown(card("Holdings", f"{int((alloc['Weight %'] > 0).sum())}",
+                     "Rebalanced to target every month"), unsafe_allow_html=True)
+    st.write("")
 
-# --------------------------------------------------------------------------
-# Sources
-# --------------------------------------------------------------------------
-st.markdown("## Where the base assumptions come from")
-with st.expander("J.P. Morgan 2026 LTCMA · sources and method", expanded=False):
-    for name, mini, text in SOURCES:
-        a, b = st.columns([1, 3])
-        a.markdown(f'<div class="srcname">{name}</div>'
-                   f'<div class="srcmini">{mini}</div>', unsafe_allow_html=True)
-        b.markdown(f'<div class="srctext">{text}</div>', unsafe_allow_html=True)
-        st.write("")
+    csv = disp.round(4).to_csv(index=False)
+    st.download_button("Download table (CSV)", csv,
+                       f"keepp_monte_carlo_{'base' if is_base else 'custom'}.csv",
+                       "text/csv", icon=":material/download:")
 
-st.markdown(
-    '<div class="foot" style="margin-top:1.4rem">'
-    'Modelling limits worth stating to any reader: correlations are static, with no '
-    'regime-switching or stress-period correlation lift inside the simulation even though '
-    'the volatility anchors are regime-weighted; lognormal returns are thin-tailed relative '
-    'to realised markets; figures are nominal USD with no fees, taxes or cashflows.'
-    '</div>', unsafe_allow_html=True)
+    # ---- saved runs ------------------------------------------------------
+    section("Saved scenarios",
+            "Save the current mix and results to compare several options side by "
+            "side. Saved scenarios last until you close this browser tab — "
+            "download the Excel file to keep them.")
+    saved = st.session_state.saved_runs
+    next_seq = len(saved) + 1
+    default_label = rs.auto_label(next_seq, "Base" if is_base else "Custom", years)
+
+    sc1, sc2, sc3 = st.columns([2.4, 1, 1], vertical_alignment="bottom")
+    label_in = sc1.text_input("Name this scenario", value=default_label,
+                              key=f"run_label_{NONCE}",
+                              placeholder="e.g. More stocks")
+    if sc2.button("Save scenario", width='stretch', type="primary"):
+        st.session_state.saved_runs.append(rs.make_record(
+            next_seq, label_in, "Base" if is_base else "Custom",
+            alloc, paths, years, seed, res))
+        bump_editors()
+        st.rerun()
+    if sc3.button("Clear all", width='stretch', disabled=not saved):
+        st.session_state.saved_runs = []
+        st.rerun()
+
+    if saved:
+        if len(saved) >= 2:
+            cmp = pd.DataFrame([{
+                "run": f"{r.seq}. {r.label}",
+                "val": r.median_wealth_x * amount,
+                "val_l": money(r.median_wealth_x * amount),
+                "loss": f"{r.p_loss_pct:.1f}%",
+                "yrs": f"{r.years} yrs",
+                "vol": f"±{r.analytic_vol_pct:.1f}%"} for r in saved])
+            bars = alt.Chart(cmp).mark_bar(color=ACCENT, cornerRadiusEnd=4,
+                                           height=18).encode(
+                x=alt.X("val:Q", title=None, axis=alt.Axis(
+                    format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                    domain=False, ticks=False)),
+                y=alt.Y("run:N", sort=list(cmp["run"]), title=None,
+                        axis=alt.Axis(labelFontSize=12, labelColor=INK,
+                                      domain=False, ticks=False, labelLimit=260)),
+                tooltip=[alt.Tooltip("run:N", title="Scenario"),
+                         alt.Tooltip("val_l:N", title="Typical value"),
+                         alt.Tooltip("yrs:N", title="Horizon"),
+                         alt.Tooltip("vol:N", title="Yearly swings"),
+                         alt.Tooltip("loss:N", title="Chance of loss")])
+            txt = alt.Chart(cmp).mark_text(align="left", dx=6, fontSize=12,
+                                           fontWeight=600, color=INK_2).encode(
+                x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
+            st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
+                        f'the end of each scenario</div>', unsafe_allow_html=True)
+            st.altair_chart((bars + txt).properties(
+                height=max(36 * len(cmp), 90)).configure_view(strokeWidth=0),
+                width='stretch')
+
+        hist_df = rs.history_table(saved)
+        st.dataframe(
+            hist_df, hide_index=True, width='stretch',
+            column_config={
+                "#": st.column_config.NumberColumn(width="small"),
+                "Label": st.column_config.TextColumn("Scenario", width="medium"),
+                "Saved": st.column_config.TextColumn(width="medium"),
+                "Paths": st.column_config.NumberColumn("Futures"),
+                "Sleeves": st.column_config.NumberColumn("Holdings"),
+                "Return %": st.column_config.NumberColumn("Avg return %",
+                                                          format="%.2f"),
+                "Volatility %": st.column_config.NumberColumn("Swings %",
+                                                              format="%.2f"),
+                "Median wealth": st.column_config.NumberColumn("Typical ×",
+                                                               format="%.3f×"),
+                "P(loss) %": st.column_config.NumberColumn("Chance of loss %",
+                                                           format="%.2f"),
+            })
+        st.download_button(
+            f"Download Excel ({len(saved)} scenario{'s' if len(saved) != 1 else ''})",
+            rs.to_excel_bytes(saved), "keepp_saved_runs.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            icon=":material/download:")
+    else:
+        st.caption("No scenarios saved yet.")
+
+    # ---- sources ---------------------------------------------------------
+    section("Where the assumptions come from")
+    with st.expander("J.P. Morgan 2026 LTCMA · sources and method"):
+        for name, mini, text in SOURCES:
+            a, b = st.columns([1, 3])
+            a.markdown(f'<div class="srcname">{name}</div>'
+                       f'<div class="srcmini">{mini}</div>', unsafe_allow_html=True)
+            b.markdown(f'<div class="srctext">{text}</div>', unsafe_allow_html=True)
+            st.write("")
+
+    st.markdown(
+        '<div class="foot" style="margin-top:1.2rem">'
+        'Modelling limits: correlations are static, with no regime-switching or '
+        'stress-period correlation lift inside the simulation even though the '
+        'volatility anchors are regime-weighted; lognormal returns are thin-tailed '
+        'relative to realised markets; figures are nominal USD with no fees, taxes or '
+        'cashflows. The "bad year" figure on the Overview is a normal approximation '
+        '(average return − 1.645 × volatility), not a simulated number.'
+        '</div>', unsafe_allow_html=True)
