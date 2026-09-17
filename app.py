@@ -353,6 +353,30 @@ def run_sim(w, r, v, corr_flat, paths, years, seed):
     return simulate(list(w), list(r), list(v), corr, paths, years, seed)
 
 
+# Slider step for the two constrained objectives, in percent points. 0.01pp
+# matches the NumberColumn convention used everywhere else in this file.
+STEP_PP = 0.01
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def feasible_span(metric, cache_key, _mu, _cov, _limits):
+    """Achievable range of a target return / volatility budget. Cached.
+
+    Streamlit does not hash arguments whose names start with an underscore, so
+    `cache_key` carries the identity instead — and it MUST change whenever the
+    feasible set does: the lines, mu, sigma, the correlation slice, the bands,
+    the cash floor, the per-line cap and the scope. Get that wrong and the
+    slider keeps yesterday's ends after a band is widened, which is a silent
+    version of the bug the slider exists to remove.
+
+    Worth caching because of the vol span specifically: its lower end is a
+    minimum-variance QP, ~1ms over six sleeves but about a second over all 58
+    lines, and this runs on every rerun.
+    """
+    fn = opt.return_span if metric == "return" else opt.vol_span
+    return fn(_mu, _cov, _limits)
+
+
 # --------------------------------------------------------------------------
 # Sidebar — inputs
 # --------------------------------------------------------------------------
@@ -579,6 +603,70 @@ st.caption(
     "get there? Decision variables are the individual LTCMA line weights — "
     "long-only, summing to 100%, subject to a cash floor and per-category bands.")
 
+def range_strip(span, lo_pp, hi_pp, chosen, metric, current_pp):
+    """A 44px bar showing what is reachable, what is not, and where you are.
+
+    Padded ~12% beyond each end on purpose: without the padding the reachable
+    band fills the whole width and the manager sees a full bar rather than a
+    range with ends.
+    """
+    lo_s, hi_s = span.lo * 100, span.hi * 100
+    pad = max((hi_s - lo_s) * 0.12, 0.05)
+    x0, x1 = lo_s - pad, hi_s + pad
+    unit = "return" if metric == "return" else "volatility"
+
+    # No tick labels: the two ends are labelled directly under the band and the
+    # exact figures are in the caption, so an axis only collides with the band.
+    axis = alt.Axis(title=None, labels=False, ticks=False, grid=False,
+                    domain=False)
+    xs = alt.Scale(domain=[x0, x1], nice=False)
+
+    # Explicit pixel extents. A mark_rect with only x/x2 collapses to nothing —
+    # Vega needs a vertical extent, and there is no y field to give it one.
+    TOP, BOT = 4, 26
+
+    unreachable = alt.Chart(pd.DataFrame([{"a": x0, "b": x1}])).mark_rect(
+        color=GRID, opacity=.5, y=TOP, y2=BOT).encode(
+        x=alt.X("a:Q", axis=axis, scale=xs), x2="b:Q")
+    reachable = alt.Chart(pd.DataFrame([{
+        "a": lo_s, "b": hi_s,
+        "lbl": f"reachable {lo_s:.2f}% – {hi_s:.2f}%"}])).mark_rect(
+        color=BAND_INNER, opacity=.95, y=TOP, y2=BOT).encode(
+        x=alt.X("a:Q", scale=xs), x2="b:Q",
+        tooltip=[alt.Tooltip("lbl:N", title=f"Achievable {unit}")])
+
+    # The current portfolio can sit outside the span — on the vol axis the
+    # bands may exclude it. Pin the marker to the edge and say so: that is real
+    # information about the bands, not an error state.
+    outside = current_pp < lo_s or current_pp > hi_s
+    cur_x = float(np.clip(current_pp, lo_s, hi_s))
+    cur = alt.Chart(pd.DataFrame([{
+        "x": cur_x,
+        "lbl": (f"current {current_pp:.2f}% — outside the achievable range"
+                if outside else f"current {current_pp:.2f}%")}])).mark_point(
+        size=95, shape="triangle-up", filled=True, color=BRICK, opacity=1,
+        y=BOT + 5).encode(
+        x=alt.X("x:Q", scale=xs), tooltip=[alt.Tooltip("lbl:N", title="Today")])
+
+    pick = alt.Chart(pd.DataFrame([{
+        "x": float(chosen), "lbl": f"{chosen:.2f}%"}])).mark_rule(
+        color=ACCENT, strokeWidth=2.5, y=TOP - 3, y2=BOT + 3).encode(
+        x=alt.X("x:Q", scale=xs),
+        tooltip=[alt.Tooltip("lbl:N", title=f"Target {unit}")])
+
+    # Two layers rather than one with an align expression: this Altair rejects
+    # an expr in `align`, so the alignment is baked into each mark.
+    def _end(x, text, align):
+        return alt.Chart(pd.DataFrame([{"x": x, "t": text}])).mark_text(
+            fontSize=10, color=INK_3, y=BOT + 13, font="monospace",
+            align=align).encode(x=alt.X("x:Q", scale=xs), text="t:N")
+
+    ends = _end(lo_s, f"{lo_s:.2f}%", "left") + _end(hi_s, f"{hi_s:.2f}%", "right")
+
+    return (unreachable + reachable + ends + cur + pick).properties(
+        height=44).configure_view(strokeWidth=0)
+
+
 OBJ_SHARPE = "Maximum Sharpe ratio"
 OBJ_MINVOL = "Minimum volatility for a target return"
 OBJ_MAXRET = "Maximum return for a volatility budget"
@@ -640,14 +728,13 @@ else:
                      "ignores.")
             cur_r_pct, cur_v_pct = [x * 100 for x in
                                     opt.portfolio(cur_w, opt_mu, opt_cov)]
-            if objective == OBJ_MINVOL:
-                target_pct = st.number_input(
-                    "Target return %", value=round(cur_r_pct + 0.5, 2),
-                    min_value=-20.0, max_value=60.0, step=0.05, format="%.2f")
-            elif objective == OBJ_MAXRET:
-                budget_pct = st.number_input(
-                    "Volatility budget %", value=round(cur_v_pct, 2),
-                    min_value=0.01, max_value=100.0, step=0.05, format="%.2f")
+            # The two constrained objectives take a parameter whose achievable
+            # range depends on the cash floor, the per-line cap and the category
+            # bands — all of which are rendered BELOW this point. So the slot is
+            # reserved here and filled further down, once those are known. It
+            # keeps the control exactly where it has always been on screen while
+            # letting its ends be computed from values read after it.
+            target_slot = st.container()
         with oc2:
             rf_default = (float(opt_alloc["Return %"].iloc[cash_pos[0]])
                           if cash_pos else 3.80)
@@ -712,6 +799,101 @@ else:
                   "Switch to the sleeves above to run it."))
         show_stability = show_stability and not is_universe
 
+    # ----------------------------------------------------------------------
+    # The constraint set, built ONCE here rather than inside the run block, so
+    # the slider's ends and the solve are guaranteed to come from the same
+    # Limits object. Two code paths would let the slider offer a target the
+    # solver then rejects.
+    # ----------------------------------------------------------------------
+    lower = np.zeros(n_lines)
+    upper = np.full(n_lines, cap_pct / 100.0)
+    if cash_pos:
+        lower[cash_pos[0]] = floor_pct / 100.0
+        upper[cash_pos[0]] = max(upper[cash_pos[0]], floor_pct / 100.0)
+    band_map = {r["Category"]: (float(r["Min %"]) / 100.0,
+                                float(r["Max %"]) / 100.0)
+                for _, r in bands_df.iterrows()}
+    limits = opt.Limits(lower, upper, groups,
+                        {k: band_map.get(k, (0.0, 1.0)) for k in groups})
+
+    # ----------------------------------------------------------------------
+    # Fill the reserved slot: a slider bounded by what is actually achievable,
+    # plus a strip showing the range. Only the two constrained objectives need
+    # it, and the span costs a QP, so it is computed only when asked for.
+    # ----------------------------------------------------------------------
+    target_pct = budget_pct = None
+    if objective in (OBJ_MINVOL, OBJ_MAXRET):
+        metric = "return" if objective == OBJ_MINVOL else "vol"
+        label = ("Target return %" if metric == "return"
+                 else "Volatility budget %")
+        cache_key = (
+            tuple(opt_lines),
+            tuple(np.round(opt_mu, 10)), tuple(np.round(opt_vols, 10)),
+            float(np.round(opt_cov.sum(), 10)), float(np.round(np.trace(opt_cov), 10)),
+            tuple(sorted((k, round(v[0], 8), round(v[1], 8))
+                         for k, v in limits.sleeve_band.items())),
+            round(float(floor_pct), 6), round(float(cap_pct), 6),
+            bool(is_universe), metric,
+        )
+        with target_slot:
+            try:
+                span = feasible_span(metric, cache_key, opt_mu, opt_cov, limits)
+            except opt.Infeasible as e:
+                span = None
+                st.error(f"**These constraints cannot all be satisfied.** {e}")
+            except Exception as e:
+                span = None
+                st.error(f"**Could not work out the achievable range.** "
+                         f"{type(e).__name__}: {e}")
+
+            if span is not None:
+                lo_pp, hi_pp = [x * 100 for x in
+                                opt.slider_bounds(span, STEP_PP / 100.0)]
+                if span.degenerate or hi_pp - lo_pp < STEP_PP / 2:
+                    # st.slider RAISES when min_value == max_value, and
+                    # constraints that pin the portfolio are reachable — a cash
+                    # floor at the top of the FI band, or per-line caps summing
+                    # near 100%. This branch is not defensive padding.
+                    st.info(f"These constraints pin the portfolio to a single "
+                            f"{'return' if metric == 'return' else 'volatility'} "
+                            f"of **{lo_pp:.2f}%**. Widen a band to open a range.")
+                    chosen = lo_pp
+                else:
+                    key = f"opt_target_{metric}"
+                    # Clamp BEFORE the widget exists: bands change between
+                    # reruns, and a stored value outside the new bounds makes
+                    # st.slider raise StreamlitAPIException.
+                    if key in st.session_state:
+                        st.session_state[key] = float(
+                            np.clip(st.session_state[key], lo_pp, hi_pp))
+                    else:
+                        seed_v = cur_r_pct if metric == "return" else cur_v_pct
+                        st.session_state[key] = float(
+                            np.clip(round(seed_v, 2), lo_pp, hi_pp))
+                    chosen = st.slider(
+                        label, min_value=float(lo_pp), max_value=float(hi_pp),
+                        step=STEP_PP, format="%.2f%%", key=key,
+                        help="Only the achievable range is offered, given the "
+                             "cash floor, per-line cap and category bands below. "
+                             "Returns here are ARITHMETIC (g + σ²/2), which is "
+                             "what mean-variance optimizes on — for AC World "
+                             "Equity that is 105bp above the compound figure in "
+                             "the allocation table.")
+                    st.altair_chart(
+                        range_strip(span, lo_pp, hi_pp, chosen, metric,
+                                    cur_r_pct if metric == "return" else cur_v_pct),
+                        width='stretch')
+                    st.caption(
+                        f"Achievable {'return' if metric == 'return' else 'volatility'}: "
+                        f"**{span.lo*100:.2f}% – {span.hi*100:.2f}%**. "
+                        f"The two ends are the same efficient frontier read on "
+                        f"its two axes — the range is set by the constraints "
+                        f"below, so widening a band widens this.")
+                if metric == "return":
+                    target_pct = chosen
+                else:
+                    budget_pct = chosen
+
     run_opt = st.button("Run optimization", type="primary")
 
     # ----------------------------------------------------------------------
@@ -729,16 +911,9 @@ else:
     # max_sharpe() to about 1e-6 in Sharpe for a tenth of the solves.
     # ----------------------------------------------------------------------
     if run_opt:
-        lower = np.zeros(n_lines)
-        upper = np.full(n_lines, cap_pct / 100.0)
-        if cash_pos:
-            lower[cash_pos[0]] = floor_pct / 100.0
-            upper[cash_pos[0]] = max(upper[cash_pos[0]], floor_pct / 100.0)
-        band_map = {r["Category"]: (float(r["Min %"]) / 100.0,
-                                    float(r["Max %"]) / 100.0)
-                    for _, r in bands_df.iterrows()}
-        limits = opt.Limits(lower, upper, groups,
-                            {k: band_map.get(k, (0.0, 1.0)) for k in groups})
+        # `limits` is built above, shared with the slider. Do not rebuild it
+        # here — the slider's ends must come from the same constraint set the
+        # solver uses.
         n_pts = 24 if is_universe else 60
         spinner_msg = (f"Solving {n_lines} lines — about 20 seconds…"
                        if is_universe else "Solving…")
@@ -778,6 +953,7 @@ else:
                 "note": note, "stability": band,
                 "cur_w": cur_w.copy(), "mode": mode,
                 "universe": is_universe, "alloc": opt_alloc.copy(),
+                "target_pct": target_pct, "budget_pct": budget_pct,
             }
         except opt.Infeasible as e:
             st.session_state.pop("opt_result", None)
@@ -870,6 +1046,25 @@ else:
                          alt.Tooltip("ret:Q", format=".2f", title="Return %"),
                          alt.Tooltip("vol:Q", format=".2f", title="Vol %"),
                          alt.Tooltip("sharpe:Q", format=".3f", title="Sharpe")]))
+
+        # The constraint the answer was solved under, drawn on the frontier so
+        # the strip in the expander and this chart cannot tell different stories.
+        if R.get("target_pct") is not None:
+            layers.append(alt.Chart(
+                pd.DataFrame([{"ret": float(R["target_pct"]),
+                               "lbl": f"target return {R['target_pct']:.2f}%"}])
+            ).mark_rule(color=INK_3, strokeDash=[3, 3], strokeWidth=1,
+                        opacity=.8).encode(
+                y=alt.Y("ret:Q", scale=alt.Scale(zero=False, nice=True)),
+                tooltip=[alt.Tooltip("lbl:N", title="Constraint")]))
+        if R.get("budget_pct") is not None:
+            layers.append(alt.Chart(
+                pd.DataFrame([{"vol": float(R["budget_pct"]),
+                               "lbl": f"vol budget {R['budget_pct']:.2f}%"}])
+            ).mark_rule(color=INK_3, strokeDash=[3, 3], strokeWidth=1,
+                        opacity=.8).encode(
+                x=alt.X("vol:Q", scale=alt.Scale(zero=False, nice=True)),
+                tooltip=[alt.Tooltip("lbl:N", title="Constraint")]))
 
         chart = alt.layer(*layers).properties(height=330).configure_view(
             strokeWidth=0).configure_axis(labelFont="monospace", titleFontSize=11)

@@ -25,6 +25,7 @@ size. `inputs_from_percent()` applies the conversion; nothing else should.
 Weights are unitless, so nothing needs converting on the way back out.
 """
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -593,3 +594,125 @@ def unconstrained_tangency(mu, cov, rf) -> np.ndarray:
     """
     x = np.linalg.solve(cov, mu - rf)
     return x / x.sum()
+
+
+# --------------------------------------------------------------------------
+# Feasible ranges for the two constrained objectives
+#
+# "Minimum volatility for a target return" and "Maximum return for a volatility
+# budget" each take a parameter that is neither a bound nor a band, so
+# _named_infeasibility() cannot see it. Ask for a target outside the achievable
+# range and the constraint set is empty: the solver breaks the BUDGET row to
+# chase the return row, comes back with weights summing to 1.0003, and a caller
+# that renormalizes turns that into a clean-looking allocation. A 20% target
+# rendered as a 13.21% portfolio that way.
+#
+# These functions compute what is actually reachable so the UI can offer a
+# slider between the two ends rather than a box that accepts -20% to 60%.
+# --------------------------------------------------------------------------
+SPAN_TOL = 1e-7             # 0.001 bp — below this the range is a point
+
+
+@dataclass(frozen=True)
+class Span:
+    """The achievable range of one objective's parameter, under the constraints."""
+    metric: str             # "return" | "vol"
+    lo: float               # decimals, not percent points
+    hi: float
+    w_lo: np.ndarray        # the portfolio at each end
+    w_hi: np.ndarray
+    degenerate: bool        # hi - lo below SPAN_TOL
+
+
+def _lp(mu, limits, sense=+1):
+    """min (sense=+1) or max (sense=-1) of mu'w over the full constraint set.
+
+    HiGHS, not trust-constr. The objective is linear, so this is exact — and it
+    also sidesteps a measured artifact: trust-constr's max-return solve lands on
+    99.982% of a single line rather than 100%, which would put the top of the
+    slider 0.17bp inside the true maximum.
+    """
+    n = limits.n
+    A_ub, b_ub = [], []
+    for name, idx in limits.sleeve_index.items():
+        blo, bhi = limits.sleeve_band[name]
+        row = np.zeros(n); row[idx] = -1.0
+        A_ub.append(row); b_ub.append(-blo)
+        row = np.zeros(n); row[idx] = 1.0
+        A_ub.append(row); b_ub.append(bhi)
+    res = linprog(c=sense * np.asarray(mu, dtype=float),
+                  A_ub=np.array(A_ub) if A_ub else None,
+                  b_ub=np.array(b_ub) if b_ub else None,
+                  A_eq=np.ones((1, n)), b_eq=np.array([1.0]),
+                  bounds=list(zip(limits.lower, limits.upper)), method="highs")
+    if not res.success:
+        raise Infeasible(_named_infeasibility(limits) or
+                         "no allocation satisfies every constraint at once.")
+    return np.clip(res.x, limits.lower, limits.upper)
+
+
+def return_span(mu, cov, limits) -> Span:
+    """Achievable arithmetic mu'w. Two LPs — cheap at any universe size.
+
+    The low end is the minimum achievable RETURN, not the return of the
+    minimum-variance portfolio. Between the two sits a thin band that is
+    feasible but dominated — you can target it and get more risk for less
+    return. Measured at 4.1bp with the bands open and 0.4bp with the default
+    bands. It is included because it is genuinely reachable and excluding it
+    would make the slider's own floor infeasible; it is not worth drawing.
+    """
+    w_lo = _lp(mu, limits, sense=+1)
+    w_hi = _lp(mu, limits, sense=-1)
+    lo, hi = float(w_lo @ mu), float(w_hi @ mu)
+    return Span("return", lo, hi, w_lo, w_hi, hi - lo < SPAN_TOL)
+
+
+def vol_span(mu, cov, limits) -> Span:
+    """Volatility budgets that actually bind.
+
+    Lower end: the global minimum-variance portfolio. Nothing feasible carries
+    less risk, so a smaller budget is infeasible rather than conservative.
+
+    Upper end: the volatility OF THE MAXIMUM-RETURN PORTFOLIO, not the highest
+    feasible variance. Above that the budget stops binding — the answer is the
+    max-return portfolio whatever the slider says — so a slider running further
+    would have a dead zone at the top, which reads as a broken control.
+    """
+    w_lo = min_variance(mu, cov, limits, feasible_start(limits)).x
+    w_lo = np.clip(w_lo, limits.lower, limits.upper)
+    w_hi = _lp(mu, limits, sense=-1)
+    lo = float(np.sqrt(max(w_lo @ cov @ w_lo, 0.0)))
+    hi = float(np.sqrt(max(w_hi @ cov @ w_hi, 0.0)))
+    if hi < lo:                      # only reachable from solver noise
+        lo, hi = hi, lo
+        w_lo, w_hi = w_hi, w_lo
+    return Span("vol", lo, hi, w_lo, w_hi, hi - lo < SPAN_TOL)
+
+
+def slider_bounds(span, step):
+    """Round the achievable span INWARD onto the step grid.
+
+    Never round(). Rounding outward puts the end notch OUTSIDE the feasible set,
+    and at a 1bp step that happens at three of four measured Base-sleeve
+    endpoints — by 0.22 to 0.41 bp. That is not a rounding nicety: a target
+    0.2245 bp below the achievable minimum is what produced the empty constraint
+    set, the non-converged solve and the renormalized 99.97%-cash allocation. It
+    would put that bug at the DEFAULT POSITION of the control.
+
+    Inward rounding also makes (hi - lo) an exact multiple of the step, so the
+    top notch lands on the bound rather than somewhere short of it.
+    """
+    lo = math.ceil(span.lo / step - 1e-9) * step
+    hi = math.floor(span.hi / step + 1e-9) * step
+    if hi < lo:
+        # The whole span is narrower than one step, so no grid point sits
+        # inside it. Snapping to the nearest notch would land OUTSIDE the
+        # feasible set — the exact failure this function exists to prevent —
+        # so return the span's own midpoint, off-grid and certainly feasible.
+        # The caller renders this as a pinned value, not a slider.
+        mid = (span.lo + span.hi) / 2.0
+        return mid, mid
+    n = max(int(round((hi - lo) / step)), 0)
+    hi = lo + n * step
+    # Float drift on lo + n*step can put the ends a few ulps outside the span.
+    return max(lo, span.lo), min(hi, span.hi) if hi > span.hi else hi

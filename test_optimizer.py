@@ -286,6 +286,123 @@ if p25 is not None:
     check("at least one line's optimal weight is visibly unstable — which is "
           "the point of showing it", spread.max() > 0.01)
 
+# ==========================================================================
+print()
+print("=" * 78)
+print("9. FEASIBLE SPANS — what the two constrained objectives can be asked for")
+print("=" * 78)
+STEP = 0.0001                     # 0.01pp, the slider step
+
+span_r = O.return_span(mu, cov, limits)
+span_v = O.vol_span(mu, cov, limits)
+print(f"       default bands + 5% cash floor:")
+print(f"         return {span_r.lo*100:.4f}% - {span_r.hi*100:.4f}%")
+print(f"         vol    {span_v.lo*100:.4f}% - {span_v.hi*100:.4f}%")
+
+check("return span is ordered and non-degenerate",
+      span_r.hi > span_r.lo and not span_r.degenerate)
+check("vol span is ordered and non-degenerate",
+      span_v.hi > span_v.lo and not span_v.degenerate)
+check("both span endpoints are feasible portfolios",
+      all(O._feasible(w, limits, tol=1e-6)
+          for w in (span_r.w_lo, span_r.w_hi, span_v.w_lo, span_v.w_hi)))
+
+# the upper end is the same max-return portfolio for both spans
+check("return span's top and vol span's top are the same portfolio",
+      np.abs(span_r.w_hi - span_v.w_hi).max() < 1e-9)
+wlo_e, rlo_e, whi_e, rhi_e = O._endpoints(mu, cov, limits)
+check(f"return span top {span_r.hi*100:.4f}% >= _endpoints' max-return "
+      f"{rhi_e*100:.4f}% (LP is exact; trust-constr leaves a vertex artifact)",
+      span_r.hi >= rhi_e - 1e-9)
+sliver = (rlo_e - span_r.lo) * 1e4
+print(f"       dominated sliver below the min-variance return: {sliver:.2f} bp")
+check("return span's floor is at or below the min-variance portfolio's return",
+      span_r.lo <= rlo_e + 1e-12)
+check(f"vol span's floor {span_v.lo*100:.4f}% == the min-variance portfolio's "
+      f"vol {O.portfolio(wlo_e, mu, cov)[1]*100:.4f}%",
+      abs(span_v.lo - O.portfolio(wlo_e, mu, cov)[1]) < 1e-9)
+check("vol span's ceiling == the vol of the LP max-return portfolio",
+      abs(span_v.hi - O.portfolio(span_r.w_hi, mu, cov)[1]) < 1e-12)
+
+# with every band open the return span is exactly [min(mu), max(mu)]
+wide = O.Limits(np.zeros(n), np.ones(n), groups, {k: (0.0, 1.0) for k in groups})
+sw = O.return_span(mu, cov, wide)
+check(f"bands open: return span is [min(mu), max(mu)] = "
+      f"[{mu.min()*100:.4f}%, {mu.max()*100:.4f}%]",
+      abs(sw.lo - mu.min()) < 1e-12 and abs(sw.hi - mu.max()) < 1e-12)
+
+# ---- inward rounding ------------------------------------------------------
+rng2 = np.random.default_rng(11)
+bad = 0
+for _ in range(400):
+    a = float(rng2.uniform(-0.05, 0.30)); b = a + float(rng2.uniform(1e-6, 0.2))
+    st_ = float(rng2.choice([1e-4, 5e-4, 1e-3, 1e-2]))
+    sp = O.Span("return", a, b, np.zeros(1), np.zeros(1), False)
+    lo, hi = O.slider_bounds(sp, st_)
+    if lo < a - 1e-12 or hi > b + 1e-12:
+        bad += 1
+    if abs(round((hi - lo) / st_) - (hi - lo) / st_) > 1e-9:
+        bad += 1
+check("400 random spans: slider_bounds never lands outside the span, and the "
+      "width is always a whole number of steps", bad == 0)
+
+for sp, lbl in ((span_r, "return"), (span_v, "vol")):
+    lo, hi = O.slider_bounds(sp, STEP)
+    check(f"{lbl} slider ends are inside the achievable span "
+          f"({lo*100:.4f}% - {hi*100:.4f}%)",
+          lo >= sp.lo - 1e-15 and hi <= sp.hi + 1e-15)
+
+# round() would have put three of four ends OUTSIDE — the whole reason for this
+outside = sum(1 for sp in (span_r, span_v) for v, end in
+              ((round(sp.lo / STEP) * STEP, "lo"), (round(sp.hi / STEP) * STEP, "hi"))
+              if (end == "lo" and v < sp.lo) or (end == "hi" and v > sp.hi))
+print(f"       round() would place {outside} of 4 ends outside the feasible set")
+
+# ---- EVERY NOTCH SOLVES. The test that would have caught the original bugs.
+lo_r, hi_r = O.slider_bounds(span_r, STEP)
+grid = [lo_r, hi_r] + list(np.linspace(lo_r, hi_r, 20))
+worst_sum, fails = 0.0, []
+for t in grid:
+    r_ = O.min_variance(mu, cov, limits, target_return=float(t))
+    worst_sum = max(worst_sum, abs(r_.x.sum() - 1.0))
+    if not r_.success or abs(r_.x.sum() - 1.0) > 1e-9:
+        fails.append(t)
+check(f"every target-return notch solves, pre-renormalization "
+      f"(22 targets, worst |sum(w)-1| {worst_sum:.2e})", not fails)
+
+lo_v, hi_v = O.slider_bounds(span_v, STEP)
+gridv = [lo_v, hi_v] + list(np.linspace(lo_v, hi_v, 20))
+worst_sum, failsv = 0.0, []
+for bgt in gridv:
+    r_ = O.max_return(mu, cov, limits, vol_budget=float(bgt))
+    worst_sum = max(worst_sum, abs(r_.x.sum() - 1.0))
+    v_here = O.portfolio(r_.x, mu, cov)[1]
+    if not r_.success or abs(r_.x.sum() - 1.0) > 1e-7 or v_here > bgt + 1e-6:
+        failsv.append(bgt)
+check(f"every vol-budget notch solves and respects its budget "
+      f"(22 budgets, worst |sum(w)-1| {worst_sum:.2e})", not failsv)
+
+# the three audited bad inputs are now unreachable from the slider
+for bad_t, lbl in ((0.01, "1.00%"), (0.20, "20.00%")):
+    check(f"a target return of {lbl} is outside the slider's range",
+          not (lo_r <= bad_t <= hi_r))
+check("a vol budget of 0.10% is outside the slider's range",
+      not (lo_v <= 0.001 <= hi_v))
+
+# ---- degenerate constraints -----------------------------------------------
+pin = {k: (float(cur_cat := cur[i].sum()), float(cur_cat))
+       for k, i in groups.items()} if False else None
+cur = W
+pinned = O.Limits(np.array([W[i] for i in range(n)]), np.array([W[i] for i in range(n)]),
+                  groups, {k: (float(W[i].sum()), float(W[i].sum()))
+                           for k, i in groups.items()})
+sp_d = O.return_span(mu, cov, pinned)
+check("constraints that pin every weight give degenerate=True, not a raise",
+      sp_d.degenerate and abs(sp_d.hi - sp_d.lo) < O.SPAN_TOL)
+lo_d, hi_d = O.slider_bounds(sp_d, STEP)
+check("slider_bounds on a degenerate span returns lo == hi rather than hi < lo",
+      lo_d == hi_d)
+
 print()
 print("RESULT:", "all checks pass" if ok else "FAILURES ABOVE — investigate")
 raise SystemExit(0 if ok else 1)

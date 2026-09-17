@@ -218,7 +218,7 @@ security-group rule limiting inbound 8501 to your office range.
 | `jpm_ltcma.py` | The 58 LTCMA lines in three categories, the correlation loader and Higham repair, and the sleeve sync rules. No Streamlit import. Update here for the 2027 LTCMA — every line must appear in the CSV and in a category, or the tests fail. |
 | `optimizer.py` | Mean-variance optimization over the allocation lines. Pure numpy/scipy, no Streamlit import. |
 | `test_engine.py` | 54 checks: workbook reconciliation, matrix integrity and repair size, sub-matrix PSD over 300 random draws, category coverage, and the sleeve sync rules. |
-| `test_optimizer.py` | 42 checks: the closed-form tangency match, the two-asset analytic minimum-variance weight, frontier monotonicity, reconciliation against the stat cards, and named errors on infeasible constraints. |
+| `test_optimizer.py` | 61 checks: the closed-form tangency match, the two-asset analytic minimum-variance weight, frontier monotonicity, reconciliation against the stat cards, named errors on infeasible constraints, and the feasible-span/slider-bounds rules. |
 | `requirements.txt` | Pinned. Verified to resolve and reproduce the workbook. |
 | `Dockerfile` | Mirrors are build args, so it works inside and outside China. |
 | `docker-compose.yml` | One-command deploy. |
@@ -443,6 +443,42 @@ Four objectives:
 | Maximum long-run growth | `max wᵀμ − ½wᵀΣw` — the highest **median** wealth, which is what the fan chart plots |
 | Minimum volatility for a target return | `min wᵀΣw` s.t. `wᵀμ = r` |
 | Maximum return for a volatility budget | `max wᵀμ` s.t. `wᵀΣw ≤ b²` |
+
+### The feasible-range sliders
+
+The bottom two objectives take a parameter that is neither a bound nor a band, so
+`_named_infeasibility()` cannot see it. Ask for something outside the achievable
+range and the constraint set is empty: the solver breaks the *budget* row to chase
+the return row and comes back with weights summing to 1.0003, which a caller that
+renormalizes turns into a clean-looking allocation. A 20% target rendered as a
+13.21% portfolio that way.
+
+Both parameters are therefore **sliders bounded by what is actually reachable**,
+not number boxes accepting −20% to 60%. `optimizer.return_span()` is two LPs;
+`optimizer.vol_span()` is the minimum-variance QP for its floor and the vol of the
+LP max-return portfolio for its ceiling — not the highest feasible variance, which
+would leave a dead zone at the top where dragging changes nothing. A 44px strip
+under each slider shows the reachable band, the unreachable padding either side,
+and where the current portfolio sits; the chosen value is also drawn on the
+frontier chart, so the two views cannot tell different stories.
+
+Three details that are load-bearing rather than cosmetic:
+
+- **`slider_bounds()` rounds inward, never `round()`.** At a 1bp step, rounding to
+  nearest puts the end notch *outside* the feasible set at three of four measured
+  Base-sleeve endpoints, by 0.22–0.41bp. That is the same empty-constraint-set
+  failure as the 99.97%-cash result — at the default position of the control.
+- **The stored value is clamped before the widget is created.** Bands change
+  between reruns and `st.slider` raises if a stored value falls outside the new
+  bounds. Verified in the browser: pushing the target to 6.95% and then raising the
+  cash floor to 60% clamps it to the new ceiling of 6.69% with no exception.
+- **The slider reads in arithmetic returns**, the optimizer's units, not the
+  allocation table's compound ones. The gap is 0.22bp for cash and about 105bp for
+  a global equity line, so the help text says so.
+
+Constraints that pin the portfolio produce an explanatory message rather than a
+slider, because `st.slider` raises when `min_value == max_value` and a cash floor
+at the top of a band gets there.
 
 Outputs: the two headline numbers, the efficient frontier with the current and
 optimal portfolios plotted on it, a weights table with category subtotals sorted
