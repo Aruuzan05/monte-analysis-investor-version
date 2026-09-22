@@ -310,3 +310,124 @@ def applied_sleeves(uni_alloc: pd.DataFrame, opt_w,
                      "Return %": _num(src.at[i, "Return %"]),
                      "Vol %": _num(src.at[i, "Vol %"])})
     return pd.DataFrame(rows, columns=ALLOC_COLS)
+
+
+def max_sharpe_qp(mu, cov, limits, rf):
+    """(weights, sharpe) for the maximum-Sharpe portfolio in ONE convex QP.
+
+    WHY THIS EXISTS. tangency_on_frontier() needs a solved frontier to search
+    along — 24 QPs plus ~12 refinement QPs. At n=58 each trust-constr solve
+    costs about 0.6s, so "Best balance" across the catalogue took ~22s, almost
+    all of it spent drawing a frontier nobody had asked to see.
+
+    THE REFORMULATION (Cornuejols & Tütüncü, homogenisation). Sharpe is
+    scale-invariant, so substitute y = k·w with k > 0 and fix the excess return
+    of y at 1:
+
+        minimise  y'Σy
+        s.t.      (mu - rf)'y = 1
+                  1'y = k,   k >= 0
+                  lower_i·k <= y_i <= upper_i·k          (per-line box)
+                  lo_g·k   <= Σ_{i∈g} y_i <= hi_g·k       (category bands)
+
+    Every constraint of the original problem is linear in w, so every one of
+    them stays linear in (y, k): this is a convex QP with a unique optimum, and
+    w = y/k is the tangency portfolio exactly. It is valid whenever some
+    feasible portfolio earns more than rf — checked with an LP first; if none
+    does, max-Sharpe is not well defined and this raises opt.Infeasible.
+
+    PRECISION. trust-constr finds the right face of the polytope; the answer
+    is then re-solved as a minimum-variance QP at the return it found, which
+    ends in optimizer._kkt_polish — the same exact finish every other objective
+    in this app gets. test_universe.py checks it against the reference.
+    """
+    from scipy.optimize import Bounds, LinearConstraint, linprog, minimize
+
+    mu = np.asarray(mu, dtype=float)
+    cov = np.asarray(cov, dtype=float)
+    n = limits.n
+    ex = mu - float(rf)
+
+    # Is any feasible portfolio above rf? One LP: maximise ex'w over the set.
+    A_ub, b_ub = [], []
+    for name, idx in limits.sleeve_index.items():
+        lo, hi = limits.sleeve_band[name]
+        row = np.zeros(n); row[idx] = 1.0
+        A_ub += [row, -row]; b_ub += [hi, -lo]
+    lp = linprog(-ex, A_ub=np.array(A_ub) if A_ub else None,
+                 b_ub=np.array(b_ub) if b_ub else None,
+                 A_eq=np.ones((1, n)), b_eq=[1.0],
+                 bounds=list(zip(limits.lower, limits.upper)), method="highs")
+    if not lp.success:
+        raise opt.Infeasible("these constraints cannot all be satisfied")
+    if -lp.fun <= 1e-9:
+        raise opt.Infeasible(
+            "no allowed portfolio earns more than the risk-free rate, so the "
+            "maximum-Sharpe portfolio is not defined — lower the risk-free rate")
+
+    # Variables z = [y_1..y_n, k]. Linear rows, all of the form a'z in [lb, ub].
+    rows, lb, ub = [], [], []
+    rows.append(np.r_[ex, 0.0]); lb.append(1.0); ub.append(1.0)
+    rows.append(np.r_[np.ones(n), -1.0]); lb.append(0.0); ub.append(0.0)
+    for i in range(n):
+        e = np.zeros(n + 1); e[i] = 1.0
+        if limits.lower[i] > 0:
+            r = e.copy(); r[n] = -limits.lower[i]
+            rows.append(r); lb.append(0.0); ub.append(np.inf)
+        if limits.upper[i] < 1.0:
+            r = e.copy(); r[n] = -limits.upper[i]
+            rows.append(r); lb.append(-np.inf); ub.append(0.0)
+    for name, idx in limits.sleeve_index.items():
+        lo, hi = limits.sleeve_band[name]
+        g = np.zeros(n + 1); g[idx] = 1.0
+        r = g.copy(); r[n] = -lo
+        rows.append(r); lb.append(0.0); ub.append(np.inf)
+        r = g.copy(); r[n] = -hi
+        rows.append(r); lb.append(-np.inf); ub.append(0.0)
+    cons = LinearConstraint(np.array(rows), np.array(lb), np.array(ub))
+
+    # Same objective scaling as optimizer.min_variance, for the same reason.
+    s = 1.0 / max(float(np.mean(np.diag(cov))), 1e-300)
+    H = np.zeros((n + 1, n + 1)); H[:n, :n] = 2.0 * s * cov
+
+    # Start: the LP's best portfolio blended with an interior point, scaled so
+    # its excess return is exactly 1 — feasible by construction.
+    w0 = 0.5 * lp.x + 0.5 * opt.feasible_start(limits)
+    k0 = 1.0 / max(float(ex @ w0), 1e-12)
+    if float(ex @ w0) <= 0:
+        w0, k0 = lp.x, 1.0 / float(ex @ lp.x)
+    z0 = np.r_[w0 * k0, k0]
+
+    import warnings
+    with warnings.catch_warnings():
+        # A category band pinned at 100% duplicates the budget row; the SVD
+        # fallback trust-constr warns about handles it correctly.
+        warnings.simplefilter("ignore", UserWarning)
+        res = _qp(minimize, s, cov, n, z0, H, Bounds, cons)
+    k = float(res.x[n])
+
+    if not np.isfinite(k) or k <= 0:
+        raise opt.Infeasible("the maximum-Sharpe search did not converge")
+    w = np.clip(res.x[:n] / k, limits.lower, limits.upper)
+    w = w / w.sum()
+
+    # Exact finish: the tangency portfolio IS the minimum-variance portfolio
+    # at its own return, so re-solve that QP and let _kkt_polish land it.
+    pol = opt.min_variance(mu, cov, limits, w, target_return=float(w @ mu))
+    if pol.success:
+        wp = np.clip(pol.x, limits.lower, limits.upper)
+        wp = wp / wp.sum()
+        if opt.sharpe(wp, mu, cov, rf) >= opt.sharpe(w, mu, cov, rf) - 1e-12:
+            w = wp
+    return w, opt.sharpe(w, mu, cov, rf)
+
+
+def _qp(minimize, s, cov, n, z0, H, Bounds, cons):
+    """The homogenised QP solve itself (split out so the caller can wrap it)."""
+    return minimize(lambda z: s * float(z[:n] @ cov @ z[:n]), z0,
+                    jac=lambda z: np.r_[2.0 * s * cov @ z[:n], 0.0],
+                    hess=lambda z: H, method="trust-constr",
+                    bounds=Bounds(np.zeros(n + 1), np.full(n + 1, np.inf)),
+                    constraints=[cons],
+                    options={"maxiter": 400, "gtol": 1e-9, "xtol": 1e-12,
+                             "verbose": 0})

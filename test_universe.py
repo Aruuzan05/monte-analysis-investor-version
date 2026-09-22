@@ -313,6 +313,47 @@ check("the whole 58-line universe collapses to a readable table",
 check("applying it produces sleeves totalling exactly 100%",
       abs(U.applied_sleeves(uni, u_w)["Weight %"].sum() - 100.0) < 1e-6)
 
+# ---------------------------------------------------------------------------
+# max_sharpe_qp — the one-QP tangency the app now uses across the catalogue
+# ---------------------------------------------------------------------------
+print("\nmax_sharpe_qp (homogenised single QP)")
+t0 = time.perf_counter()
+q_w, q_s = U.max_sharpe_qp(u_mu, u_cov, u_lim, RF)
+q_elapsed = time.perf_counter() - t0
+print(f"       solved 58 lines in {q_elapsed:.2f}s (Sharpe {q_s:.6f}) "
+      f"vs {elapsed:.1f}s on the frontier path (Sharpe {u_s:.6f})")
+check("it is a valid portfolio inside every constraint",
+      opt._feasible(q_w, u_lim, tol=1e-7))
+check("it is at least as good as the frontier search (to 1e-6 in Sharpe)",
+      q_s >= u_s - 1e-6)
+check("no frontier point beats it",
+      all(q_s >= (r - RF) / v - 1e-9 for r, v in zip(u_fr[0], u_fr[1]) if v > 0))
+check("it is at least 5x faster than the frontier path", q_elapsed * 5 < elapsed)
+
+# and on the six sleeves, against the reference optimizer.max_sharpe
+_rng = np.random.default_rng(7)
+_worst_gap = 0.0
+_all_feasible = True
+for _ in range(6):
+    _mu = u_mu[:6] + _rng.normal(0, 0.01, 6)
+    _vol = np.sqrt(np.diag(u_cov))[:6]
+    _cov = u_cov[:6, :6]
+    _lim = opt.Limits(np.zeros(6), np.full(6, 0.6),
+                      {"all": np.arange(6)}, {"all": (0.0, 1.0)})
+    _wr, _, _, _sr = opt.max_sharpe(_mu, _cov, _lim, None, 0.02)
+    _wq, _sq = U.max_sharpe_qp(_mu, _cov, _lim, 0.02)
+    _worst_gap = min(_worst_gap, _sq - _sr)
+    _all_feasible &= opt._feasible(_wq, _lim, tol=1e-7)
+check("on random 6-line problems it is feasible and never below the "
+      "reference max_sharpe (worst gap %.1e)" % _worst_gap,
+      _all_feasible and _worst_gap > -1e-6)
+
+try:
+    U.max_sharpe_qp(u_mu, u_cov, u_lim, 0.50)
+    check("an rf above every return is refused, not solved", False)
+except opt.Infeasible:
+    check("an rf above every return is refused, not solved", True)
+
 print()
 print("RESULT:", "all checks pass" if ok else "FAILURES ABOVE — investigate")
 raise SystemExit(0 if ok else 1)

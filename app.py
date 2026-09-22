@@ -535,14 +535,19 @@ with st.sidebar:
                       help="How long the money stays invested.")
 
     st.write("")
+    # Always visible — the manager's most-used switch, so it is not hidden in
+    # the expander. The widget key stays "mode" so pending_mode still works.
+    mode = st.radio(
+        "Market assumptions", [MODE_BASE, MODE_CUSTOM], key="mode",
+        format_func=lambda m: ("Standard" if m == MODE_BASE else "Custom"),
+        captions=["J.P. Morgan 2026 house view — only the mix can change",
+                  "Edit holdings, returns and risk figures"],
+        help="Standard keeps Keepp's signed-off assumptions. Custom lets you "
+             "add any of J.P. Morgan's 58 asset classes and type your own "
+             "return and risk numbers.")
+
+    st.write("")
     with st.expander("Advanced settings"):
-        mode = st.radio(
-            "Market assumptions", [MODE_BASE, MODE_CUSTOM], key="mode",
-            format_func=lambda m: ("Standard (J.P. Morgan 2026)" if m == MODE_BASE
-                                   else "Custom"),
-            captions=["Keepp's house view — only the mix can change",
-                      "Edit every return and risk figure"],
-        )
         paths = st.select_slider(
             "Number of simulated futures",
             options=[1_000, 2_500, 5_000, 10_000, 25_000, 50_000], value=10_000,
@@ -995,11 +1000,23 @@ def change_chart(names, cur, new):
 
 with tab_opt:
     section("Let the model suggest a better mix",
-            "Choose a goal. The model searches for the best combination of your "
-            "holdings — using the same return and risk assumptions as the "
+            "Pick which investments it may use and a goal. It searches for the "
+            "best combination — with the same return and risk assumptions as the "
             "Overview — and shows what would change.")
 
-    scope = st.session_state.get("opt_scope", SCOPE_SLEEVES)
+    # Step 1 — the pool. Visible, not tucked in Advanced: "only what I hold"
+    # and "anything in J.P. Morgan's catalogue" are two different questions.
+    scope = st.radio(
+        "1 · Which investments can it use?", [SCOPE_SLEEVES, SCOPE_UNIVERSE],
+        key="opt_scope", horizontal=True,
+        format_func=lambda s_: ("Only my current holdings" if s_ == SCOPE_SLEEVES
+                                else f"All {len(uni.INVESTABLE)} asset classes"),
+        captions=["Re-weight what the portfolio already holds",
+                  "Build the best mix from J.P. Morgan's full catalogue"],
+        help=f"All {len(uni.INVESTABLE)} asset classes: every J.P. Morgan 2026 "
+             f"LTCMA line is a candidate. Lines you already hold keep your own "
+             f"return and risk figures; the rest use J.P. Morgan's. Takes about "
+             f"1–2 seconds.")
     is_universe = scope == SCOPE_UNIVERSE
 
     opt_alloc = uni.universe_alloc(alloc) if is_universe else alloc
@@ -1024,7 +1041,8 @@ with tab_opt:
                 "rebalance between.")
     else:
         objective = st.radio(
-            "Your goal", list(OBJ_PLAIN), key="opt_objective", horizontal=True,
+            "2 · What's the goal?", list(OBJ_PLAIN), key="opt_objective",
+            horizontal=True,
             format_func=lambda o: OBJ_PLAIN[o][0],
             captions=[OBJ_PLAIN[o][1] for o in OBJ_PLAIN])
         cur_r_pct, cur_v_pct = [x * 100 for x in
@@ -1033,11 +1051,6 @@ with tab_opt:
         target_slot = st.container()
 
         with st.expander("Advanced limits"):
-            scope = st.radio(
-                "Choose from", [SCOPE_SLEEVES, SCOPE_UNIVERSE], key="opt_scope",
-                horizontal=True,
-                captions=["Only re-weight what the portfolio holds",
-                          "Any of J.P. Morgan's 58 asset classes (slower)"])
             oc1, oc2, oc3 = st.columns(3)
             rf_default = (float(opt_alloc["Return %"].iloc[cash_pos[0]])
                           if cash_pos else 3.80)
@@ -1168,19 +1181,27 @@ with tab_opt:
         run_opt = st.button("Suggest a mix", type="primary", icon=":material/auto_awesome:")
 
         if run_opt:
-            n_pts = 24 if is_universe else 60
-            spinner_msg = (f"Searching {n_lines} asset classes — about 20 seconds…"
+            # Across the catalogue the frontier is NOT solved up front: at
+            # n=58 it is 24 QPs at ~0.6s each, and only the optional map in an
+            # expander needs it. Best balance uses the one-QP tangency
+            # (universe.max_sharpe_qp) instead — measured 1.4s vs 19s, and at
+            # least as high a Sharpe (test_universe.py). Over the sleeves every
+            # QP is ~1ms, so that path is unchanged.
+            import time as _time
+            _t0 = _time.perf_counter()
+            spinner_msg = (f"Searching all {n_lines} asset classes…"
                            if is_universe else "Searching for the best mix…")
             try:
                 with st.spinner(spinner_msg):
                     w0 = opt.feasible_start(limits)          # raises Infeasible
-                    frontier = opt.efficient_frontier(opt_mu, opt_cov, limits, w0,
-                                                      n_pts)
+                    frontier = (None if is_universe else
+                                opt.efficient_frontier(opt_mu, opt_cov, limits,
+                                                       w0, 60))
                     rf = rf_pct / 100.0
                     if objective == OBJ_SHARPE:
                         if is_universe:
-                            w_opt, _ = uni.tangency_on_frontier(
-                                opt_mu, opt_cov, limits, frontier, rf)
+                            w_opt, _ = uni.max_sharpe_qp(opt_mu, opt_cov,
+                                                         limits, rf)
                         else:
                             w_opt, _, _, _ = opt.max_sharpe(
                                 opt_mu, opt_cov, limits, w0, rf)
@@ -1208,6 +1229,7 @@ with tab_opt:
                     "cur_w": cur_w.copy(), "mode": mode,
                     "universe": is_universe, "alloc": opt_alloc.copy(),
                     "target_pct": target_pct, "budget_pct": budget_pct,
+                    "limits": limits, "seconds": _time.perf_counter() - _t0,
                 }
             except opt.Infeasible as e:
                 st.session_state.pop("opt_result", None)
@@ -1249,9 +1271,14 @@ with tab_opt:
                             int(paths), int(years), int(seed))[0]
             b_t, a_t = before.rows[-1], after.rows[-1]
 
+            _pool = (f"all {n_lines} asset classes" if R.get("universe")
+                     else "your current holdings")
+            _secs = R.get("seconds")
             section("Your mix today vs. the suggestion",
-                    f"Goal: <b>{OBJ_PLAIN[R['objective']][0]}</b>. "
-                    f"Outcomes are for {money(amount)} over {T} years.")
+                    f"Goal: <b>{OBJ_PLAIN[R['objective']][0]}</b> · chosen from "
+                    f"<b>{_pool}</b>"
+                    + (f" · found in {_secs:.1f} s" if _secs is not None else "")
+                    + f". Outcomes are for {money(amount)} over {T} years.")
 
             def cmp_card(label, was, now, better, sub):
                 colr = ACCENT if better else (BRICK if better is False else INK)
@@ -1295,16 +1322,29 @@ with tab_opt:
             else:
                 new_names = ALLOC_NAMES
                 new_weights = [float(x) * 100 for x in w_opt]
-            # Colour follows the holding: same order as the Your mix tab, so a
-            # holding keeps its colour everywhere; new lines are appended.
-            union = list(dict.fromkeys(
-                list(ALLOC_NAMES)
-                + [n for n, w in sorted(zip(new_names, new_weights),
-                                        key=lambda t: -t[1]) if w > 0]))
-            cmp_map = color_map(union)
+            # Colour follows the holding. Holdings shown on the Your mix tab
+            # keep that colour; slots belonging to holdings that are empty in
+            # BOTH donuts are freed and handed to incoming lines, largest
+            # first. Only what is still left over folds into "Other" — across
+            # the catalogue the suggestion usually sells most of today's mix,
+            # so reserving every old slot would push most of it into grey.
+            now_w = dict(zip(ALLOC_NAMES, alloc["Weight %"]))
+            new_w = dict(zip(new_names, new_weights))
+            present = ({n for n, w in now_w.items() if w >= 0.05}
+                       | {n for n, w in new_w.items() if w >= 0.05})
+            cmp_map = {n: c for n, c in CMAP.items() if n in present}
+            free = [c for c in SERIES if c not in cmp_map.values()]
+            incoming = [n for n, w in sorted(new_w.items(), key=lambda t: -t[1])
+                        if w >= 0.05 and n not in cmp_map]
+            for n, c in zip(incoming, free):
+                cmp_map[n] = c
+            folded = [n for n in incoming if n not in cmp_map]
             descs = {**ALLOC_DESCS,
                      **({plain_name(x)[0]: plain_name(x)[1]
                          for x in applied["LTCMA line"]} if applied is not None else {})}
+            if folded:
+                descs["Other"] = ", ".join(
+                    f"{n} {new_w[n]:.1f}%" for n in folded)
 
             st.write("")
             dl, dr, dc = st.columns([1, 1, 1.35], gap="large")
@@ -1323,18 +1363,39 @@ with tab_opt:
                 if ch is not None:
                     st.altair_chart(ch, width='content')
             with dc:
-                leg = pd.DataFrame([{"name": n, "color": c} for n, c in
-                                    list(cmp_map.items())
-                                    + ([("Other", OTHER_COLOR)]
-                                       if len(union) > len(cmp_map) else [])])
+                leg = pd.DataFrame([{"name": n, "color": c}
+                                    for n, c in cmp_map.items()],
+                                   columns=["name", "color"])
                 nw = dict(zip(new_df["name"], new_df["w"]))
-                held = set(now_df.loc[now_df["w"] >= 0.05, "name"])
                 leg["w"] = [nw.get(n, 0.0) for n in leg["name"]]
-                # hide holdings that are empty both today and in the suggestion
-                leg = leg[(leg["w"] >= 0.05) | leg["name"].isin(held)]
+                # largest suggested share first; holdings being sold (0%)
+                # stay listed at the bottom — that IS part of the answer
+                leg = leg.sort_values("w", ascending=False, kind="stable")
+                if folded:
+                    leg = pd.concat([leg, pd.DataFrame([{
+                        "name": "Other", "color": OTHER_COLOR,
+                        "w": nw.get("Other", 0.0)}])], ignore_index=True)
                 st.markdown('<div class="muted" style="margin:.5rem 0 .2rem">'
                             'Suggested shares</div>', unsafe_allow_html=True)
                 st.markdown(legend_html(leg, descs), unsafe_allow_html=True)
+
+            # ---- by asset class (full catalogue only) ---------------------
+            if R.get("universe"):
+                used = int((w_opt >= uni.DUST_PCT / 100).sum())
+                section("By asset class",
+                        f"The suggestion uses <b>{used} of {n_lines}</b> asset "
+                        f"classes (holdings under {uni.DUST_PCT:.2f}% are left "
+                        f"out).")
+                cat_df = uni.category_table(opt_cats, cur_w, w_opt)
+                ccols = st.columns(len(cat_df))
+                for col, (_, row) in zip(ccols, cat_df.iterrows()):
+                    d = row["Change (pp)"]
+                    col.markdown(card(
+                        CATEGORY_PLAIN.get(row["Category"], row["Category"]),
+                        f'<span class="was">{row["Current %"]:.0f}%</span>'
+                        f'<span class="arrow">→</span>{row["Optimal %"]:.0f}%',
+                        f'{d:+.1f} pts'.replace("-", "−")),
+                        unsafe_allow_html=True)
 
             # ---- what changes ---------------------------------------------
             section("What would change",
@@ -1387,75 +1448,95 @@ with tab_opt:
 
             # ---- for the analyst ------------------------------------------
             with st.expander("Risk/return map (efficient frontier)"):
-                f_r, f_v, _ = R["frontier"]
-                fdf = pd.DataFrame({"vol": f_v * 100, "ret": f_r * 100})
-                pts = pd.DataFrame([
-                    {"vol": v_cur * 100, "ret": r_cur * 100, "what": "Today",
-                     "sharpe": sh_cur},
-                    {"vol": v_opt * 100, "ret": r_opt * 100, "what": "Suggested",
-                     "sharpe": sh_opt}])
-                assets = pd.DataFrame({
-                    "vol": opt_vols * 100, "ret": opt_mu * 100,
-                    "what": [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]})
+                if R.get("frontier") is None:
+                    st.markdown(
+                        '<div class="muted">The map traces the best possible '
+                        'return at every risk level. Across all asset classes it '
+                        'takes about 15 seconds, so it is drawn only on request.'
+                        '</div>', unsafe_allow_html=True)
+                    if st.button("Draw the map", icon=":material/show_chart:"):
+                        with st.spinner("Tracing the frontier across all asset "
+                                        "classes…"):
+                            try:
+                                _lim = R["limits"]
+                                st.session_state.opt_result["frontier"] = (
+                                    opt.efficient_frontier(
+                                        opt_mu, opt_cov, _lim,
+                                        opt.feasible_start(_lim), 24))
+                            except Exception as e:
+                                st.error(f"Could not draw the map: {e}")
+                            else:
+                                st.rerun()
+                else:
+                    f_r, f_v, _ = R["frontier"]
+                    fdf = pd.DataFrame({"vol": f_v * 100, "ret": f_r * 100})
+                    pts = pd.DataFrame([
+                        {"vol": v_cur * 100, "ret": r_cur * 100, "what": "Today",
+                         "sharpe": sh_cur},
+                        {"vol": v_opt * 100, "ret": r_opt * 100, "what": "Suggested",
+                         "sharpe": sh_opt}])
+                    assets = pd.DataFrame({
+                        "vol": opt_vols * 100, "ret": opt_mu * 100,
+                        "what": [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]})
 
-                def _axis(title):
-                    return alt.Axis(title=title, labelColor=INK_3, titleColor=INK_3,
-                                    gridColor=GRID, labelFontSize=11, format=".0f",
-                                    titleFontWeight=400, domain=False)
+                    def _axis(title):
+                        return alt.Axis(title=title, labelColor=INK_3, titleColor=INK_3,
+                                        gridColor=GRID, labelFontSize=11, format=".0f",
+                                        titleFontWeight=400, domain=False)
 
-                x_enc = alt.X("vol:Q", axis=_axis("Yearly swings (volatility) %"),
-                              scale=alt.Scale(zero=True, nice=True))
-                y_enc = alt.Y("ret:Q", axis=_axis("Average return per year %"),
-                              scale=alt.Scale(zero=False, nice=True))
-                layers = [
-                    alt.Chart(assets).mark_circle(size=50, color=INK_3,
-                                                  opacity=.45).encode(
-                        x=x_enc, y=y_enc,
-                        tooltip=[alt.Tooltip("what:N", title="Holding"),
-                                 alt.Tooltip("ret:Q", format=".2f", title="Return %"),
-                                 alt.Tooltip("vol:Q", format=".2f", title="Swings %")]),
-                    alt.Chart(fdf).mark_line(color=ACCENT, strokeWidth=2).encode(
-                        x=x_enc, y=y_enc),
-                ]
-                if R["objective"] == OBJ_SHARPE and v_opt > 0:
-                    v_max = float(max(f_v.max(), v_cur, opt_vols.max())) * 100
-                    cml = pd.DataFrame({"vol": [0.0, v_max],
-                                        "ret": [rf * 100, rf * 100 + sh_opt * v_max]})
-                    layers.append(alt.Chart(cml).mark_line(
-                        color=ACCENT, strokeDash=[4, 4], strokeWidth=1,
-                        opacity=.6).encode(x=x_enc, y=y_enc))
-                if R.get("target_pct") is not None:
-                    layers.append(alt.Chart(pd.DataFrame(
-                        [{"ret": float(R["target_pct"])}])).mark_rule(
-                        color=INK_3, strokeDash=[3, 3]).encode(y="ret:Q"))
-                if R.get("budget_pct") is not None:
-                    layers.append(alt.Chart(pd.DataFrame(
-                        [{"vol": float(R["budget_pct"])}])).mark_rule(
-                        color=INK_3, strokeDash=[3, 3]).encode(x="vol:Q"))
-                layers.append(
-                    alt.Chart(pts).mark_point(size=200, filled=True, opacity=1,
-                                              stroke="white", strokeWidth=2).encode(
-                        x=x_enc, y=y_enc,
-                        color=alt.Color("what:N", scale=alt.Scale(
-                            domain=["Today", "Suggested"], range=[INK_3, ACCENT]),
-                            legend=alt.Legend(title=None, orient="top-left")),
-                        shape=alt.Shape("what:N", scale=alt.Scale(
-                            domain=["Today", "Suggested"],
-                            range=["circle", "diamond"]), legend=None),
-                        tooltip=[alt.Tooltip("what:N", title=""),
-                                 alt.Tooltip("ret:Q", format=".2f", title="Return %"),
-                                 alt.Tooltip("vol:Q", format=".2f", title="Swings %"),
-                                 alt.Tooltip("sharpe:Q", format=".3f",
-                                             title="Sharpe")]))
-                st.altair_chart(alt.layer(*layers).properties(height=340)
-                                .configure_view(strokeWidth=0), width='stretch')
-                st.caption(
-                    "Grey dots are the individual asset classes. The line shows the "
-                    "best possible return for each level of risk under your limits "
-                    "(the efficient frontier); the dashed line is the capital market "
-                    f"line. Sharpe ratio: {sh_cur:.2f} today → {sh_opt:.2f} "
-                    f"suggested. Returns here are arithmetic: "
-                    f"{r_cur*100:.2f}% → {r_opt*100:.2f}%.")
+                    x_enc = alt.X("vol:Q", axis=_axis("Yearly swings (volatility) %"),
+                                  scale=alt.Scale(zero=True, nice=True))
+                    y_enc = alt.Y("ret:Q", axis=_axis("Average return per year %"),
+                                  scale=alt.Scale(zero=False, nice=True))
+                    layers = [
+                        alt.Chart(assets).mark_circle(size=50, color=INK_3,
+                                                      opacity=.45).encode(
+                            x=x_enc, y=y_enc,
+                            tooltip=[alt.Tooltip("what:N", title="Holding"),
+                                     alt.Tooltip("ret:Q", format=".2f", title="Return %"),
+                                     alt.Tooltip("vol:Q", format=".2f", title="Swings %")]),
+                        alt.Chart(fdf).mark_line(color=ACCENT, strokeWidth=2).encode(
+                            x=x_enc, y=y_enc),
+                    ]
+                    if R["objective"] == OBJ_SHARPE and v_opt > 0:
+                        v_max = float(max(f_v.max(), v_cur, opt_vols.max())) * 100
+                        cml = pd.DataFrame({"vol": [0.0, v_max],
+                                            "ret": [rf * 100, rf * 100 + sh_opt * v_max]})
+                        layers.append(alt.Chart(cml).mark_line(
+                            color=ACCENT, strokeDash=[4, 4], strokeWidth=1,
+                            opacity=.6).encode(x=x_enc, y=y_enc))
+                    if R.get("target_pct") is not None:
+                        layers.append(alt.Chart(pd.DataFrame(
+                            [{"ret": float(R["target_pct"])}])).mark_rule(
+                            color=INK_3, strokeDash=[3, 3]).encode(y="ret:Q"))
+                    if R.get("budget_pct") is not None:
+                        layers.append(alt.Chart(pd.DataFrame(
+                            [{"vol": float(R["budget_pct"])}])).mark_rule(
+                            color=INK_3, strokeDash=[3, 3]).encode(x="vol:Q"))
+                    layers.append(
+                        alt.Chart(pts).mark_point(size=200, filled=True, opacity=1,
+                                                  stroke="white", strokeWidth=2).encode(
+                            x=x_enc, y=y_enc,
+                            color=alt.Color("what:N", scale=alt.Scale(
+                                domain=["Today", "Suggested"], range=[INK_3, ACCENT]),
+                                legend=alt.Legend(title=None, orient="top-left")),
+                            shape=alt.Shape("what:N", scale=alt.Scale(
+                                domain=["Today", "Suggested"],
+                                range=["circle", "diamond"]), legend=None),
+                            tooltip=[alt.Tooltip("what:N", title=""),
+                                     alt.Tooltip("ret:Q", format=".2f", title="Return %"),
+                                     alt.Tooltip("vol:Q", format=".2f", title="Swings %"),
+                                     alt.Tooltip("sharpe:Q", format=".3f",
+                                                 title="Sharpe")]))
+                    st.altair_chart(alt.layer(*layers).properties(height=340)
+                                    .configure_view(strokeWidth=0), width='stretch')
+                    st.caption(
+                        "Grey dots are the individual asset classes. The line shows the "
+                        "best possible return for each level of risk under your limits "
+                        "(the efficient frontier); the dashed line is the capital market "
+                        f"line. Sharpe ratio: {sh_cur:.2f} today → {sh_opt:.2f} "
+                        f"suggested. Returns here are arithmetic: "
+                        f"{r_cur*100:.2f}% → {r_opt*100:.2f}%.")
 
             with st.expander("Exact numbers"):
                 p25, p75 = R.get("stability", (None, None))
