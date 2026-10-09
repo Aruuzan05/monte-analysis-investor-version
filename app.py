@@ -142,10 +142,26 @@ st.markdown(f"""
   .total {{ border-radius: 12px; padding: 12px 16px; font-size: .92rem;
            display: flex; justify-content: space-between; align-items: center; }}
   .total.ok {{ background: #E9F4F2; color: {ACCENT_DK}; }}
+  .total {{ background: #F1F4F4; color: {INK_2}; }}
   .total.bad {{ background: #FBEFEA; color: {BRICK}; }}
   .bar {{ height: 6px; background: #E6ECEB; border-radius: 3px; margin-top: 8px;
          overflow: hidden; }}
   .bar > div {{ height: 100%; border-radius: 3px; }}
+
+  /* Asset rows on Your mix: the tick box's own label is the asset name */
+  .stCheckbox label p {{ font-weight: 650; font-size: .95rem; }}
+  /* A held asset's tick is locked ON, and Streamlit dims a disabled label —
+     which made the holdings look switched off. Keep the ink, keep the mark
+     filled; the cursor and the tooltip still say it cannot be changed. */
+  [data-testid="stCheckbox"] label[data-disabled="true"] p {{
+      color: {INK}; opacity: 1; }}
+  [data-testid="stCheckbox"] label[data-disabled="true"] {{ opacity: 1;
+      cursor: default; }}
+  [data-testid="stCheckbox"] label[data-disabled="true"][data-selected="true"] svg {{
+      opacity: 1; }}
+  .d2 {{ color: {INK_3}; font-size: .78rem; line-height: 1.45;
+        margin: 2px 0 2px 28px; }}
+  .d2 .sw {{ vertical-align: -1px; }}
 
   .sleeve {{ padding-top: 6px; }}
   .sleeve .n {{ font-weight: 650; font-size: .95rem; display: flex; gap: 8px;
@@ -299,11 +315,17 @@ SOURCES = [
      "of it. As published it is not positive semi-definite (smallest eigenvalue "
      "−0.0161); it is repaired once at load with Higham's nearest-correlation "
      "algorithm, and no pair moves as much as 0.01."),
-    ("Keepp-sourced sleeves", "3 of 6 in Base",
-     "Three base sleeves carry Keepp's own return and volatility rather than "
-     "J.P. Morgan's: a global IG blend, MSCI World realised history and the live "
-     "3-month T-bill. Each is filed under the LTCMA line it most closely is, which "
-     "supplies its correlation row."),
+    ("Keepp-sourced figures", "Custom mode only",
+     "Three lines carried Keepp's own return and volatility rather than "
+     "J.P. Morgan's: a global IG blend (5.00% · 7.02%), MSCI World realised "
+     "history (7.00% · 16.78%) and the live 3-month T-bill (3.80% · 0.67%). "
+     "<b>Standard mode no longer uses them</b> — every one of its 58 asset "
+     "classes now takes J.P. Morgan's published compound figure, so the whole "
+     "table comes from one source. They remain as the starting numbers in "
+     "<b>Custom</b>, where any figure can be typed over. The two that differ "
+     "from J.P. Morgan are U.S. Inv Grade Corporate Bonds (5.00% vs 5.20%) "
+     "and U.S. Cash (3.80% vs 3.10%); AC World Equity is the same either "
+     "way."),
     ("Method", "Regime-based vol",
      "Returns are entered as geometric per annum and simulated as correlated lognormal "
      "monthly draws, with the portfolio rebalanced to target weights every month. Vol "
@@ -357,14 +379,20 @@ def risk_level(vol: float):
 
 
 def plain_name(line_label: str):
-    """(friendly name, one-line description) for an LTCMA line label."""
+    """(display name, one-line description) for an LTCMA line label.
+
+    The NAME is always J.P. Morgan's own, so the row, the dropdown that added
+    it, the donut and Custom mode all say the same thing — with 58 lines on
+    offer, a row reading "Global stocks" while the picker says "AC World
+    Equity" is a worse trade than plainer wording. The plain-English
+    description below the name survives for the lines that have one.
+    """
     name = jpm.resolve(line_label)
-    if name in FRIENDLY:
-        return FRIENDLY[name]
     cat = jpm.category_of(line_label)
     cat_name = jpm.CATEGORY_NAME.get(cat, "") if cat else ""
-    return (jpm.LABEL.get(name, name) if name else str(line_label),
-            CATEGORY_PLAIN.get(cat_name, ""))
+    desc = (FRIENDLY[name][1] if name in FRIENDLY
+            else CATEGORY_PLAIN.get(cat_name, ""))
+    return (jpm.LABEL.get(name, name) if name else str(line_label), desc)
 
 
 def card(label, value, sub="", hot=False, dot=None, extra_cls="", style=""):
@@ -445,15 +473,47 @@ def legend_html(df, descs=None):
 # Session state
 # --------------------------------------------------------------------------
 COLS = ["LTCMA line", "Weight %", "Return %", "Vol %"]
+# BASE_SLEEVES is now only the seed for CUSTOM mode (custom_alloc_seed) and
+# the provenance notes below. Standard no longer presets anything.
 BASE_WEIGHTS = [w for _, _, w, _, _, _ in BASE_SLEEVES]
 
+def std_numbers(line_name):
+    """(compound return %, vol %) Standard mode uses for one LTCMA line.
 
-def base_alloc(weights=None) -> pd.DataFrame:
-    ws = BASE_WEIGHTS if weights is None else list(weights)
-    return pd.DataFrame(
-        [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
-          "Weight %": float(w), "Return %": r, "Vol %": v}
-         for (k, line, _, r, v, _), w in zip(BASE_SLEEVES, ws)])
+    J.P. Morgan's published COMPOUND column for all 58 lines, with no
+    exceptions — the three Keepp overrides that used to sit on top of it went
+    with the preset sleeves, so every line in Standard now comes from one
+    source and nothing is editable. Never the arithmetic column: engine.py
+    treats this field as geometric and derives mu = g + sigma^2/2 itself.
+    (Custom mode still seeds the deck's own figures; see custom_alloc_seed.)
+    """
+    row = jpm.BY_NAME[line_name]
+    return float(row[0]), float(row[2])
+
+
+def std_alloc(lines, weights) -> pd.DataFrame:
+    """Standard-mode allocation frame, ordered by J.P. Morgan category."""
+    rows = []
+    for key in CATEGORY_KEYS:
+        for ln in lines:
+            if jpm.category_of(ln) != key:
+                continue
+            r, v = std_numbers(ln)
+            rows.append({"Category": jpm.CATEGORY_NAME[key],
+                         "LTCMA line": jpm.LABEL[ln],
+                         "Weight %": float(weights.get(ln, 0.0)),
+                         "Return %": r, "Vol %": v})
+    return pd.DataFrame(rows, columns=["Category", "LTCMA line", "Weight %",
+                                       "Return %", "Vol %"])
+
+
+def seed_standard():
+    """Standard starts EMPTY — no preset sleeves.
+
+    Every portfolio is built by picking lines out of the three category
+    dropdowns, so nothing is assumed about what the client holds.
+    """
+    return ([], {}, {})
 
 
 def custom_alloc_seed() -> pd.DataFrame:
@@ -487,7 +547,12 @@ def bump_editors():
 if "custom_alloc" not in st.session_state:
     st.session_state.editor_nonce = 0
     st.session_state.custom_alloc = custom_alloc_seed()
-    st.session_state.base_weights = list(BASE_WEIGHTS)
+    # Standard mode: an ordered list of LTCMA lines, a weight for each, and a
+    # tick saying whether the optimizer may use it. Anything above 0% is
+    # always ticked; a 0% line can be ticked to offer it to the optimizer
+    # without holding it today.
+    (st.session_state.std_lines, st.session_state.std_w,
+     st.session_state.std_tick) = seed_standard()
     st.session_state.mode = MODE_BASE
 
 if "saved_runs" not in st.session_state:
@@ -586,34 +651,150 @@ tab_over, tab_mix, tab_opt, tab_det = st.tabs(
 # TAB — Your mix (runs first: everything else depends on the allocation)
 # ==========================================================================
 with tab_mix:
-    mix_left, mix_right = st.columns([1.55, 1], gap="large")
+    mix_left, mix_right = st.columns([1.95, 1], gap="large")
 
     with mix_left:
         if is_base:
             section("What's in your portfolio",
-                    "Drag a slider to change how much goes into each holding. "
-                    "The return and risk figures stay fixed to Keepp's house view.")
-            new_w = []
-            for i, (k, line, _, r, v, _) in enumerate(BASE_SLEEVES):
-                nm, desc = FRIENDLY.get(line, (line, ""))
-                c1, c2 = st.columns([1.15, 1], vertical_alignment="center")
-                c1.markdown(
-                    f'<div class="sleeve"><div class="n">'
-                    f'<span class="sw" style="background:{SERIES[i]};margin:0">'
-                    f'</span>{nm}</div><div class="d">{desc}<br>'
-                    f'Expected ~{r:.1f}% a year · swings ±{v:.1f}%</div></div>',
-                    unsafe_allow_html=True)
-                cur = float(st.session_state.base_weights[i])
-                val = c2.slider(
-                    nm, 0.0, 100.0, value=cur, step=0.5, format="%.1f%%",
-                    key=f"bw_{i}_{NONCE}", label_visibility="collapsed")
-                new_w.append(float(val))
-            st.session_state.base_weights = new_w
-            alloc = base_alloc(new_w)
+                    f"Open an asset class, pick an investment from its "
+                    "dropdown, then set its share with the slider. All "
+                    f"{len(uni.INVESTABLE)} J.P. Morgan asset classes are "
+                    "available; "
+                    "their expected return and risk are fixed to the 2026 "
+                    "LTCMA and cannot be edited here. The <b>tick</b> says "
+                    "whether the optimizer on <i>Improve the mix</i> may use "
+                    "that asset — anything above 0% is always in.")
+
+            lines = list(st.session_state.std_lines)
+            w_state = dict(st.session_state.std_w)
+            t_state = dict(st.session_state.std_tick)
+
+            # The weight each slider is ALREADY showing. Streamlit refreshes a
+            # keyed widget's session_state entry before the script runs, so
+            # this is the value after the user's drag — reading std_w instead
+            # would leave the category totals and the colours one interaction
+            # behind. Falls back to stored state on the first render.
+            live = {ln: float(st.session_state.get(f"sw_{ln}_{NONCE}",
+                                                   w_state.get(ln, 0.0)))
+                    for ln in lines}
+            # Colours are the donut's own: same order, so a holding is the
+            # same colour in the list, in the donut and on the Overview.
+            held_order = [ln for key in CATEGORY_KEYS for ln in lines
+                          if jpm.category_of(ln) == key and live[ln] > 0]
+            ROW_COLOR = color_map([plain_name(jpm.LABEL[ln])[0]
+                                   for ln in held_order])
+
+            new_w, new_t, remove, add_line = {}, {}, None, None
+            for key in CATEGORY_KEYS:
+                cat = jpm.CATEGORY_NAME[key]
+                mine = [ln for ln in lines if jpm.category_of(ln) == key]
+                held = [ln for ln in mine if live[ln] > 0]
+                c_sum = sum(live[ln] for ln in mine)
+                n_tick = sum(1 for ln in mine
+                             if t_state.get(ln, False) or live[ln] > 0)
+                pool = len(jpm.CHOICES[key])
+                label = (
+                    f"{CATEGORY_PLAIN.get(cat, cat)}  ·  nothing added  ·  "
+                    f"{pool} to choose from" if not mine else
+                    f"{CATEGORY_PLAIN.get(cat, cat)}  ·  {c_sum:.1f}%  ·  "
+                    f"{len(held)} held, {n_tick} in the optimizer  ·  "
+                    f"{pool - len(mine)} more to choose from")
+                # Open when the class has anything listed — a freshly added
+                # asset sits at 0%, and keying this off `held` collapsed the
+                # class the moment it was picked. Everything is open on a
+                # blank portfolio, where the pickers are the only thing to do.
+                with st.expander(label, expanded=bool(mine) or not lines):
+                    for ln in mine:
+                        nm, desc = plain_name(jpm.LABEL[ln])
+                        r, v = std_numbers(ln)
+                        w_now = live[ln]
+                        colr = ROW_COLOR.get(nm, OTHER_COLOR)
+                        t1, t2, t3 = st.columns(
+                            [1.85, 1.25, 0.26], vertical_alignment="center")
+                        with t1:
+                            # The asset's name IS the checkbox label: on a
+                            # phone the columns stack, and a bare tick box
+                            # above a separate name reads as unrelated.
+                            tick = st.checkbox(
+                                nm,
+                                value=bool(t_state.get(ln, False) or w_now > 0),
+                                disabled=w_now > 0, key=f"tk_{ln}_{NONCE}",
+                                help=("Held, so it is always offered to the "
+                                      "optimizer." if w_now > 0 else
+                                      "Tick to let the optimizer put money "
+                                      "into this, even though you hold none "
+                                      "today."))
+                            st.markdown(
+                                f'<div class="d2"><span class="sw" '
+                                f'style="background:{colr};margin:0 6px 0 0;'
+                                f'opacity:{1 if w_now > 0 else .35}"></span>'
+                                f'{desc + " · " if desc else ""}'
+                                f'Expected ~{r:.1f}% a year · swings '
+                                f'±{v:.1f}%</div>', unsafe_allow_html=True)
+                        val = t2.slider(
+                            nm, 0.0, 100.0, value=w_now, step=0.5,
+                            format="%.1f%%", key=f"sw_{ln}_{NONCE}",
+                            label_visibility="collapsed")
+                        if w_now <= 0 and t3.button(
+                                "✕", key=f"rm_{ln}_{NONCE}",
+                                help="Take this asset off the list"):
+                            remove = ln
+                        new_w[ln] = float(val)
+                        new_t[ln] = bool(tick) or float(val) > 0
+
+                    rest = [jpm.LABEL[n] for n, *_ , c in jpm.LINES
+                            if c == key and n not in mine]
+                    pick = st.selectbox(
+                        f"Add from {cat}", ["— add an asset —"] + rest,
+                        key=f"add_{key}_{NONCE}", label_visibility="collapsed",
+                        help=f"Any of the {pool} J.P. Morgan {cat} lines. It "
+                             f"arrives at 0%, already ticked for the optimizer.")
+                    if pick != "— add an asset —":
+                        add_line = jpm.resolve(pick)
+
+            st.session_state.std_w = new_w
+            st.session_state.std_tick = new_t
+
+            if remove is not None:
+                st.session_state.std_lines = [x for x in lines if x != remove]
+                st.session_state.std_w.pop(remove, None)
+                st.session_state.std_tick.pop(remove, None)
+                bump_editors()
+                st.rerun()
+            if add_line is not None and add_line not in lines:
+                st.session_state.std_lines = lines + [add_line]
+                st.session_state.std_w[add_line] = 0.0
+                st.session_state.std_tick[add_line] = True
+                bump_editors()
+                st.rerun()
+
+            if not lines:
+                st.info("**No assets yet.** Open an asset class above and pick "
+                        "one from its dropdown to start building the "
+                        "portfolio.", icon=":material/add_circle:")
+            else:
+                st.caption(
+                    f"Ticked assets are the pool the optimizer re-weights on "
+                    f"**Improve the mix**. Untick or press **✕** on a 0% asset "
+                    f"to drop it. All {len(uni.INVESTABLE)} J.P. Morgan lines "
+                    f"are available from the dropdowns, each on its published "
+                    f"2026 LTCMA return and volatility.")
+
+            # Everything the portfolio could hold — the optimizer's pool.
+            POOL_LINES = [ln for ln in st.session_state.std_lines
+                          if st.session_state.std_tick.get(ln, False)
+                          or st.session_state.std_w.get(ln, 0.0) > 0]
+            pool_alloc = std_alloc(POOL_LINES, st.session_state.std_w)
+            # What the portfolio actually holds — what gets simulated.
+            alloc = std_alloc(
+                [ln for ln in st.session_state.std_lines
+                 if st.session_state.std_w.get(ln, 0.0) > 0],
+                st.session_state.std_w)
 
             st.write("")
-            if st.button("↺ Reset to the recommended mix"):
-                st.session_state.base_weights = list(BASE_WEIGHTS)
+            if lines and st.button("↺ Clear all assets"):
+                (st.session_state.std_lines, st.session_state.std_w,
+                 st.session_state.std_tick) = seed_standard()
                 bump_editors()
                 st.rerun()
         else:
@@ -670,6 +851,7 @@ with tab_mix:
             alloc = (pd.concat(parts, ignore_index=True) if parts
                      else custom_alloc_seed().iloc[0:0])
             st.session_state.custom_alloc = alloc
+            pool_alloc = alloc            # Custom has no separate tick list
             if dirty_any:
                 bump_editors()
                 st.rerun()
@@ -686,6 +868,9 @@ with tab_mix:
 
     wsum = float(alloc["Weight %"].sum())
     off = abs(wsum - 100.0) > 0.005
+    # Standard now opens with nothing in it, so "0%" is the normal first
+    # state, not a mistake. It gets an invitation, not a red warning.
+    empty = len(alloc) == 0
 
     # Friendly names + colours, fixed by position in the allocation
     ALLOC_NAMES = [plain_name(x)[0] for x in alloc["LTCMA line"]]
@@ -694,7 +879,13 @@ with tab_mix:
 
     with mix_right:
         section("At a glance")
-        if off:
+        if empty:
+            st.markdown(
+                '<div class="total"><div><b>Nothing added yet</b></div>'
+                '<div>0 holdings</div></div>', unsafe_allow_html=True)
+            st.caption("Pick assets on the left and they appear here, with "
+                       "their share of the portfolio.")
+        elif off:
             gap = 100.0 - wsum
             msg = (f"{abs(gap):.1f}% still to place" if gap > 0
                    else f"{abs(gap):.1f}% too much")
@@ -708,9 +899,9 @@ with tab_mix:
             if st.button("Scale everything to 100%", type="primary", width='stretch'):
                 if wsum > 0:
                     if is_base:
-                        st.session_state.base_weights = [
-                            round(x / wsum * 100, 4)
-                            for x in st.session_state.base_weights]
+                        st.session_state.std_w = {
+                            ln: round(w / wsum * 100, 4)
+                            for ln, w in st.session_state.std_w.items()}
                     else:
                         st.session_state.custom_alloc["Weight %"] = (
                             pd.to_numeric(st.session_state.custom_alloc["Weight %"],
@@ -732,11 +923,19 @@ with tab_mix:
             st.markdown(legend_html(hdf), unsafe_allow_html=True)
 
 if off:
-    warn = (f"Your mix adds up to **{wsum:.1f}%**, not 100%. Open **Your mix** "
-            f"to adjust it, or press *Scale everything to 100%* there.")
     for t in (tab_over, tab_opt, tab_det):
         with t:
-            st.warning(warn, icon=":material/warning:")
+            if empty:
+                st.info("**Start on the Your mix tab.** Pick the investments "
+                        "this portfolio holds from the three asset-class "
+                        "dropdowns and give each one a share. Results appear "
+                        "here as soon as the shares add up to 100%.",
+                        icon=":material/arrow_back:")
+            else:
+                st.warning(
+                    f"Your mix adds up to **{wsum:.1f}%**, not 100%. Open "
+                    f"**Your mix** to adjust it, or press *Scale everything "
+                    f"to 100%* there.", icon=":material/warning:")
     st.stop()
 
 
@@ -1009,9 +1208,12 @@ with tab_opt:
     scope = st.radio(
         "1 · Which investments can it use?", [SCOPE_SLEEVES, SCOPE_UNIVERSE],
         key="opt_scope", horizontal=True,
-        format_func=lambda s_: ("Only my current holdings" if s_ == SCOPE_SLEEVES
-                                else f"All {len(uni.INVESTABLE)} asset classes"),
-        captions=["Re-weight what the portfolio already holds",
+        format_func=lambda s_: (
+            ("My ticked assets" if is_base else "Only my current holdings")
+            if s_ == SCOPE_SLEEVES
+            else f"All {len(uni.INVESTABLE)} asset classes"),
+        captions=[(f"The {len(pool_alloc)} assets ticked on Your mix"
+                   if is_base else "Re-weight what the portfolio already holds"),
                   "Build the best mix from J.P. Morgan's full catalogue"],
         help=f"All {len(uni.INVESTABLE)} asset classes: every J.P. Morgan 2026 "
              f"LTCMA line is a candidate. Lines you already hold keep your own "
@@ -1019,7 +1221,9 @@ with tab_opt:
              f"1–2 seconds.")
     is_universe = scope == SCOPE_UNIVERSE
 
-    opt_alloc = uni.universe_alloc(alloc) if is_universe else alloc
+    # The ticked pool, not just what is held: a 0% ticked asset is exactly a
+    # candidate the optimizer may move into.
+    opt_alloc = uni.universe_alloc(alloc) if is_universe else pool_alloc
     opt_lines = [jpm.resolve(x) for x in opt_alloc["LTCMA line"]]
     opt_cats = list(opt_alloc["Category"])
     n_lines = len(opt_lines)
@@ -1256,14 +1460,16 @@ with tab_opt:
             sh_cur = opt.sharpe(cur_w, opt_mu, opt_cov, rf)
 
             applied = (uni.applied_sleeves(R["alloc"], w_opt)
-                       if R.get("universe") else None)
-            if R.get("universe"):
-                a_w, a_r, a_v = (applied["Weight %"], applied["Return %"],
-                                 applied["Vol %"])
-                a_corr = corr_of(applied)
-            else:
-                a_w = [float(x) * 100 for x in w_opt]
-                a_r, a_v, a_corr = alloc["Return %"], alloc["Vol %"], corr_of(alloc)
+                       if R.get("universe") else None)   # catalogue display
+            # The "after" portfolio, as an allocation frame. Built from the
+            # frame the optimizer actually worked on (R["alloc"]) — with a
+            # ticked 0% asset in the pool that frame is LONGER than `alloc`,
+            # so reusing `alloc` here mismatched the weights and the
+            # correlation sub-matrix.
+            after_frame = uni.applied_sleeves(R["alloc"], w_opt)
+            a_w, a_r, a_v = (after_frame["Weight %"], after_frame["Return %"],
+                             after_frame["Vol %"])
+            a_corr = corr_of(after_frame)
 
             before = res
             after = run_sim(tuple(a_w), tuple(a_r), tuple(a_v),
@@ -1316,11 +1522,12 @@ with tab_opt:
                 unsafe_allow_html=True)
 
             # ---- donuts: now vs suggested ---------------------------------
+            POOL_NAMES = [plain_name(x)[0] for x in R["alloc"]["LTCMA line"]]
             if R.get("universe"):
                 new_names = [plain_name(x)[0] for x in applied["LTCMA line"]]
                 new_weights = list(applied["Weight %"])
             else:
-                new_names = ALLOC_NAMES
+                new_names = POOL_NAMES
                 new_weights = [float(x) * 100 for x in w_opt]
             # Colour follows the holding. Holdings shown on the Your mix tab
             # keep that colour; slots belonging to holdings that are empty in
@@ -1405,7 +1612,7 @@ with tab_opt:
                 chg_names = [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]
                 chg = change_chart(chg_names, cur_w, w_opt)
             else:
-                chg = change_chart(ALLOC_NAMES, cur_w, w_opt)
+                chg = change_chart(POOL_NAMES, cur_w, w_opt)
             if chg is None:
                 st.info("Your current mix already meets this goal — no changes "
                         "suggested.")
@@ -1414,15 +1621,28 @@ with tab_opt:
 
             # ---- apply ----------------------------------------------------
             ac1, ac2 = st.columns([1, 2.5], vertical_alignment="center")
-            btn = ("Use this mix (switches to Custom)" if R.get("universe")
-                   else "Use this mix")
+            btn = ("Use this mix (switches to Custom)"
+                   if R.get("universe") and not is_base else "Use this mix")
             if ac1.button(btn, type="primary", width='stretch', icon=":material/check:"):
-                if R.get("universe"):
+                if is_base:
+                    # Standard can hold any LTCMA line now, so a catalogue
+                    # optimum no longer has to be pushed into Custom: it is
+                    # written straight into the Standard list, which keeps the
+                    # locked house-view returns the mode exists to protect.
+                    keep = [ln for ln in R["lines"]
+                            if float(w_opt[R["lines"].index(ln)]) * 100
+                            >= uni.DUST_PCT] if R.get("universe") else list(R["lines"])
+                    tot = sum(float(w_opt[R["lines"].index(ln)]) for ln in keep)
+                    st.session_state.std_lines = [
+                        ln for ln in st.session_state.std_lines if ln in keep
+                    ] + [ln for ln in keep if ln not in st.session_state.std_lines]
+                    st.session_state.std_w = {
+                        ln: round(float(w_opt[R["lines"].index(ln)]) / tot * 100, 4)
+                        for ln in keep}
+                    st.session_state.std_tick = {ln: True for ln in keep}
+                elif R.get("universe"):
                     st.session_state.custom_alloc = applied.copy()
                     st.session_state.pending_mode = MODE_CUSTOM
-                elif is_base:
-                    st.session_state.base_weights = [round(float(x) * 100, 4)
-                                                     for x in w_opt]
                 else:
                     ca = st.session_state.custom_alloc.copy()
                     ca["Weight %"] = [round(float(x) * 100, 4) for x in w_opt]
@@ -1435,6 +1655,9 @@ with tab_opt:
                 'You can always go back with <i>Reset</i> there.'
                 + (f" Holdings under {uni.DUST_PCT:.2f}% are dropped and the rest "
                    f"scaled to 100%." if R.get("universe") else "")
+                + (" The suggested assets stay in Standard, on Keepp's own "
+                   "return and risk figures." if is_base and R.get("universe")
+                   else "")
                 + '</div>', unsafe_allow_html=True)
 
             st.write("")
