@@ -804,13 +804,26 @@ with tab_mix:
                     "your own. **+** adds a row; select a row and press Delete to "
                     "remove it. ★ marks an expansion-proposal line.")
             store = st.session_state.custom_alloc
+            # Each editor must be handed the SAME frame on every run until the
+            # next bump. With num_rows="dynamic", Streamlit hashes the data
+            # into the widget id, so feeding the editor its own output back
+            # (store → editor → store) changes the id on the run after an
+            # edit and silently drops whatever was typed next — values "snap
+            # back" and have to be entered twice. The base is re-read from the
+            # store only when the widget is fresh (new nonce, or it was not
+            # rendered last run, e.g. after a mode switch).
+            bases = st.session_state.setdefault("custom_bases", {})
             parts, dirty_any = [], False
 
             for key in CATEGORY_KEYS:
                 cat = jpm.CATEGORY_NAME[key]
-                g_prev = (store[store["Category"] == cat]
-                          .reset_index(drop=True)[COLS])
-                g_sum = pd.to_numeric(g_prev["Weight %"],
+                wkey = f"grp_{key}_{NONCE}"
+                if wkey not in st.session_state or key not in bases:
+                    bases[key] = (store[store["Category"] == cat]
+                                  .reset_index(drop=True)[COLS])
+                g_prev = bases[key]
+                g_now = store[store["Category"] == cat]
+                g_sum = pd.to_numeric(g_now["Weight %"],
                                       errors="coerce").fillna(0).sum()
                 st.markdown(
                     f'<div style="display:flex;justify-content:space-between;'
@@ -819,7 +832,7 @@ with tab_mix:
                     f'<span class="muted">{g_sum:.1f}% of portfolio</span></div>',
                     unsafe_allow_html=True)
                 edited = st.data_editor(
-                    g_prev, key=f"grp_{key}_{NONCE}", hide_index=True,
+                    g_prev, key=wkey, hide_index=True,
                     width='stretch', num_rows="dynamic",
                     column_config={
                         "LTCMA line": st.column_config.SelectboxColumn(
@@ -844,7 +857,9 @@ with tab_mix:
                     },
                 )
                 synced, d = jpm.sync_group(g_prev, edited, key)
-                dirty_any = dirty_any or d
+                # A deleted row shifts the rows below it, and sync_group's
+                # line-change check is positional against the base — rebase.
+                dirty_any = dirty_any or d or len(synced) < len(g_prev)
                 synced.insert(0, "Category", cat)
                 parts.append(synced)
 
