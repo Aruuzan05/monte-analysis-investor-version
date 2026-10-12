@@ -21,6 +21,9 @@ services:
       # Password file, kept out of the image so it never lands in a registry.
       # Comment this out to run without a password.
       - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+      # Accounts and saved runs (SQLite). Survives rebuilds and restarts.
+      # Back it up by copying keepp-data/keepp.db.
+      - keepp-data:/data
     # A 10k-path run is ~200ms and a few hundred MB; this is headroom for
     # three managers running 50k-path simulations at once.
     deploy:
@@ -28,3 +31,6 @@ services:
         limits:
           cpus: "2.0"
           memory: 2G
+
+volumes:
+  keepp-data:

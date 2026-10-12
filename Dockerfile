@@ -29,11 +29,16 @@ COPY requirements.txt .
 RUN pip install --index-url ${PIP_INDEX} --trusted-host ${PIP_HOST} \
         -r requirements.txt
 
-COPY engine.py app.py ./
+COPY *.py jpm_correlations.csv ./
 COPY .streamlit/config.toml .streamlit/config.toml
 
-# Run as a non-root user. The app writes nothing, so /app stays read-only.
-RUN useradd --create-home --uid 10001 keepp && chown -R keepp:keepp /app
+# Run as a non-root user. The only thing the app writes is the SQLite
+# database (accounts + saved runs) in /data — mount a volume there so it
+# survives a rebuild. Set KEEPP_DATABASE_URL to use Postgres instead.
+ENV KEEPP_DATA_DIR=/data
+RUN useradd --create-home --uid 10001 keepp \
+    && mkdir -p /data && chown -R keepp:keepp /app /data
+VOLUME ["/data"]
 USER keepp
 
 EXPOSE 8501

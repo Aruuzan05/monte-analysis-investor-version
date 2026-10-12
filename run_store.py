@@ -11,6 +11,8 @@ engine.py and optimizer.py are. It does not touch either of them beyond
 reading the Result object engine.simulate() already returns.
 """
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -56,6 +58,29 @@ class RunRecord:
     p_loss_pct: float            # terminal P(loss), in percent
     elapsed_ms: float
     horizon_rows: list           # list[dict], HORIZON_COLS keys, one per horizon
+
+
+def run_digest(mode: str, sleeves: Sequence[dict], paths, years, seed) -> str:
+    """SHA-256 over everything that determines a run's numbers.
+
+    Two runs with the same digest produce identical results, which is what
+    lets auto-save skip a re-run of an already-saved scenario. Line order is
+    kept (the Cholesky draw depends on it); floats are rounded to 6dp so a
+    weight typed as 45 and one restored as 45.000000001 hash the same.
+    """
+    def _n(x):
+        try:
+            return round(float(x), 6)
+        except (TypeError, ValueError):
+            return str(x)
+    body = {
+        "mode": mode, "paths": int(paths), "years": int(years),
+        "seed": int(seed),
+        "sleeves": [[str(s["LTCMA line"]), _n(s["Weight %"]),
+                     _n(s["Return %"]), _n(s["Vol %"])] for s in sleeves],
+    }
+    blob = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def auto_label(seq: int, mode: str, years: int) -> str:

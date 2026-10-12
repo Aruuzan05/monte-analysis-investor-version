@@ -15,12 +15,16 @@ load behind the Great Firewall.
 """
 
 import hmac
+import os
+import time
+from pathlib import Path
 
 import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
 
+import db as dbm
 import jpm_ltcma as jpm
 import optimizer as opt
 import run_store as rs
@@ -193,35 +197,175 @@ st.markdown(f"""
 
 
 # --------------------------------------------------------------------------
-# Optional password gate (set app_password in .streamlit/secrets.toml, or in
-# Streamlit Community Cloud under Manage app -> Settings -> Secrets)
+# Database + accounts. Every run is saved to the signed-in user's account
+# (db.py), so the run history survives a refresh, a container restart and a
+# change of device.
+#
+#   .streamlit/secrets.toml (or Community Cloud -> Settings -> Secrets):
+#     [database]
+#     url = "postgresql://user:pass@host/dbname"   # omit -> local SQLite file
+#     [auth]
+#     signup_code = "something-long"                # needed to create accounts
+#
+# With no signup_code, anyone may create the FIRST account; after that new
+# accounts need the code, or `python manage_users.py add <name>`.
 # --------------------------------------------------------------------------
-def password_ok() -> bool:
-    # st.secrets raises if no secrets.toml exists at all, so treat "no secrets
-    # file" the same as "no password configured" rather than crashing the app.
+SESSION_COOKIE = "keepp_session"
+COOKIE_MAX_AGE = dbm.SESSION_TTL_DAYS * 86400
+
+
+def _secret(*keys, default=""):
+    """st.secrets lookup that treats "no secrets.toml at all" as unset."""
     try:
-        secret = st.secrets.get("app_password", "")
+        node = st.secrets
+        for k in keys:
+            node = node[k]
+        return node
     except Exception:
-        secret = ""
-    if not secret:
-        return True                      # no password configured -> open
-    if st.session_state.get("_authed"):
-        return True
-
-    st.markdown("### Keepp Portfolio Outlook")
-    st.caption("Enter the access password to continue.")
-    pw = st.text_input("Password", type="password", label_visibility="collapsed")
-    if pw:
-        if hmac.compare_digest(pw, str(secret)):
-            st.session_state["_authed"] = True
-            st.rerun()
-        else:
-            st.error("That password is not correct.")
-    return False
+        return default
 
 
-if not password_ok():
+def database_url() -> str:
+    url = _secret("database", "url") or os.environ.get("KEEPP_DATABASE_URL", "")
+    if url:
+        return str(url)
+    data_dir = Path(os.environ.get("KEEPP_DATA_DIR", Path(__file__).parent / "data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{(data_dir / 'keepp.db').as_posix()}"
+
+
+@st.cache_resource(show_spinner=False)
+def get_db(url: str) -> dbm.RunDB:
+    return dbm.RunDB(url)
+
+
+try:
+    DB = get_db(database_url())
+except Exception as e:                    # bad URL, database down, wrong password
+    st.error("The run database could not be reached, so the app cannot start. "
+             "Check `[database] url` in the app's secrets.")
+    st.caption(f"{type(e).__name__}: {str(e).splitlines()[0][:300]}")
     st.stop()
+
+SIGNUP_CODE = str(_secret("auth", "signup_code") or _secret("app_password") or "")
+
+
+def _cookie_script(value: str, max_age: int):
+    """Set (or, with max_age=0, clear) the login cookie in the browser.
+
+    The cookie only carries the random session token; the server keeps its
+    hash (db.py). It is what keeps the user signed in across a refresh:
+    st.context.cookies hands it back on the next page load.
+    """
+    st.html(
+        "<script>document.cookie='" + SESSION_COOKIE + "=" + value +
+        "; Path=/; Max-Age=" + str(int(max_age)) + "; SameSite=Lax'"
+        " + (location.protocol === 'https:' ? '; Secure' : '');</script>",
+        unsafe_allow_javascript=True)
+
+
+def _sign_in(uid: int, uname: str):
+    token = DB.create_session(uid)
+    st.session_state._uid, st.session_state._uname = uid, uname
+    st.session_state._token = token
+    st.session_state._set_cookie = token
+    st.session_state.pop("_login_fails", None)
+
+
+def sign_out():
+    DB.delete_session(st.session_state.get("_token"))
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.session_state._clear_cookie = True
+
+
+def current_user():
+    """(user_id, username) for this browser session, or None."""
+    if st.session_state.get("_uid") is not None:
+        return st.session_state._uid, st.session_state._uname
+    if st.session_state.get("_clear_cookie"):
+        return None                       # just signed out; ignore stale cookie
+    token = st.context.cookies.get(SESSION_COOKIE)
+    hit = DB.user_for_token(token)
+    if hit:
+        st.session_state._uid, st.session_state._uname = hit
+        st.session_state._token = token
+    return hit
+
+
+def login_screen():
+    if st.session_state.pop("_clear_cookie", False):
+        _cookie_script("", 0)
+    _, mid, _ = st.columns([1, 1.25, 1])
+    with mid:
+        st.markdown('<div class="eyebrow">Keepp Capital</div>', unsafe_allow_html=True)
+        st.markdown("### Keepp Portfolio Outlook")
+        st.caption("Sign in to see your portfolio and your saved runs.")
+        first_user = DB.user_count() == 0
+        t_in, t_up = st.tabs(["Sign in", "Create account"])
+        with t_in:
+            with st.form("signin", border=False):
+                u = st.text_input("Username", autocomplete="username")
+                p = st.text_input("Password", type="password",
+                                  autocomplete="current-password")
+                go = st.form_submit_button("Sign in", type="primary",
+                                           width="stretch")
+            if go:
+                fails = st.session_state.get("_login_fails", 0)
+                if fails >= 3:            # slow down password guessing
+                    time.sleep(min(2 ** (fails - 2), 10))
+                uid = DB.verify_user(u, p)
+                if uid is None:
+                    st.session_state._login_fails = fails + 1
+                    st.error("Wrong username or password.")
+                else:
+                    _sign_in(uid, DB.username(uid))
+                    st.rerun()
+        with t_up:
+            if not (SIGNUP_CODE or first_user):
+                st.info("New accounts are created by the administrator. "
+                        "Ask them to add you.", icon=":material/lock:")
+            else:
+                with st.form("signup", border=False):
+                    nu = st.text_input("Choose a username",
+                                       help="3–64 characters: letters, "
+                                            "numbers, . _ - @")
+                    np1 = st.text_input("Choose a password", type="password",
+                                        autocomplete="new-password",
+                                        help=f"At least {dbm.MIN_PASSWORD_LEN} "
+                                             f"characters.")
+                    np2 = st.text_input("Repeat the password", type="password",
+                                        autocomplete="new-password")
+                    code = (st.text_input("Invitation code", type="password",
+                                          help="Given to you by Keepp.")
+                            if SIGNUP_CODE else "")
+                    go2 = st.form_submit_button("Create account", type="primary",
+                                                width="stretch")
+                if first_user and not SIGNUP_CODE:
+                    st.caption("No accounts exist yet — this one will be the "
+                               "first. Set `[auth] signup_code` in the app's "
+                               "secrets to let others register.")
+                if go2:
+                    if SIGNUP_CODE and not hmac.compare_digest(
+                            code.encode(), SIGNUP_CODE.encode()):
+                        st.error("That invitation code is not correct.")
+                    elif np1 != np2:
+                        st.error("The two passwords do not match.")
+                    else:
+                        try:
+                            uid = DB.create_user(nu, np1)
+                        except dbm.AuthError as e:
+                            st.error(str(e))
+                        else:
+                            _sign_in(uid, DB.username(uid))
+                            st.rerun()
+
+
+USER = current_user()
+if USER is None:
+    login_screen()
+    st.stop()
+UID, UNAME = USER
 
 
 # --------------------------------------------------------------------------
@@ -555,15 +699,51 @@ if "custom_alloc" not in st.session_state:
      st.session_state.std_tick) = seed_standard()
     st.session_state.mode = MODE_BASE
 
-if "saved_runs" not in st.session_state:
-    st.session_state.saved_runs = []
-
-NONCE = st.session_state.get("editor_nonce", 0)
+# Simulation settings live in session state (not just widget defaults) so a
+# restored run can set them before the sidebar widgets are drawn.
+st.session_state.setdefault("years", 10)
+st.session_state.setdefault("paths", 10_000)
+st.session_state.setdefault("sim_seed", 20260722)
 
 # A mode switch requested by "Apply as Custom sleeves" on the previous run. It
 # must land before the radio that owns the `mode` key is instantiated.
 if "pending_mode" in st.session_state:
     st.session_state.mode = st.session_state.pop("pending_mode")
+
+
+def apply_restore(stored):
+    """Put a saved run's inputs back into the app: mode, holdings, returns,
+    risk figures, horizon, number of futures and seed. Runs at the top of the
+    script, before any widget that owns these keys exists."""
+    rec = stored.record
+    is_std = rec.mode == "Base"
+    st.session_state.mode = MODE_BASE if is_std else MODE_CUSTOM
+    st.session_state.years = int(rec.years)
+    st.session_state.paths = int(rec.paths)
+    st.session_state.sim_seed = int(rec.seed)
+    if is_std:
+        held = [jpm.resolve(s["LTCMA line"]) for s in rec.sleeves]
+        extra = [ln for ln in stored.pool if ln not in held]
+        st.session_state.std_lines = held + extra
+        st.session_state.std_w = {jpm.resolve(s["LTCMA line"]): float(s["Weight %"])
+                                  for s in rec.sleeves}
+        st.session_state.std_w.update({ln: 0.0 for ln in extra})
+        st.session_state.std_tick = {ln: True for ln in held + extra}
+    else:
+        st.session_state.custom_alloc = pd.DataFrame(
+            rec.sleeves, columns=rs.ALLOC_COLS)
+        st.session_state.pop("custom_bases", None)
+    # The restored run's inputs are already saved; don't try to save them again.
+    st.session_state._last_digest = stored.digest
+    # MUST bump — the editors would otherwise re-apply stale hand edits on top
+    # of the restored values (see bump_editors()).
+    bump_editors()
+
+
+if "pending_restore" in st.session_state:
+    apply_restore(st.session_state.pop("pending_restore"))
+
+NONCE = st.session_state.get("editor_nonce", 0)
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -596,7 +776,7 @@ with st.sidebar:
         help="Used only to show results in dollars. It does not change the "
              "percentages.")
     st.caption(f"= **${amount:,.0f}**")
-    years = st.slider("For how many years?", 1, 30, 10,
+    years = st.slider("For how many years?", 1, 30, key="years",
                       help="How long the money stays invested.")
 
     st.write("")
@@ -615,10 +795,10 @@ with st.sidebar:
     with st.expander("Advanced settings"):
         paths = st.select_slider(
             "Number of simulated futures",
-            options=[1_000, 2_500, 5_000, 10_000, 25_000, 50_000], value=10_000,
+            options=[1_000, 2_500, 5_000, 10_000, 25_000, 50_000], key="paths",
             help="More futures = smoother, more precise results, but slower.")
         seed = st.number_input(
-            "Random seed", value=20260722, step=1,
+            "Random seed", step=1, key="sim_seed",
             help="Fix the seed so everyone running the same inputs sees the "
                  "same numbers.")
     is_base = mode == MODE_BASE
@@ -627,6 +807,16 @@ with st.sidebar:
         '<div class="foot" style="margin-top:1.2rem">Projections are simulations '
         'based on long-term market assumptions, not guarantees. Figures are in US '
         'dollars before fees, taxes and inflation.</div>', unsafe_allow_html=True)
+
+    st.write("")
+    ac_a, ac_b = st.columns([1.6, 1], vertical_alignment="center")
+    ac_a.markdown(f'<div class="foot">Signed in as <b>{UNAME}</b></div>',
+                  unsafe_allow_html=True)
+    if ac_b.button("Sign out", key="sign_out", width="stretch"):
+        sign_out()
+        st.rerun()
+    if "_set_cookie" in st.session_state:
+        _cookie_script(st.session_state.pop("_set_cookie"), COOKIE_MAX_AGE)
 
 
 # --------------------------------------------------------------------------
@@ -937,6 +1127,164 @@ with tab_mix:
             st.altair_chart(ch, width='content')
             st.markdown(legend_html(hdf), unsafe_allow_html=True)
 
+# --------------------------------------------------------------------------
+# Saved runs panel — every run is stored in the database automatically.
+# Defined here (before the 100% check) so it can also be shown when the
+# current mix is incomplete, e.g. right after signing in to an empty
+# Standard portfolio, which is exactly when someone wants an old run back.
+# --------------------------------------------------------------------------
+def _rename_run(run_id, key):
+    if DB.rename_run(UID, run_id, st.session_state.get(key, "")):
+        st.toast("Run renamed.", icon=":material/check:")
+
+
+def saved_runs_panel(current_digest=None):
+    section("Saved scenarios",
+            "Every run is saved to your account automatically, so it is still "
+            "here after a refresh or on another device. Select rows in the "
+            "table to restore, rename, compare or delete them.")
+    stored = list(reversed(DB.list_runs(UID)))          # newest first
+    saved = [x.record for x in stored]
+    # The key changes whenever a run is added or removed, which clears the
+    # selection: a new run lands at the top and would otherwise shift every
+    # selected row onto a different run.
+    tbl_key = (f"runs_tbl_{st.session_state.get('runs_tbl_v', 0)}_"
+               f"{len(stored)}_{stored[0].id if stored else 0}")
+    sel_state = st.session_state.get(tbl_key)
+    sel_rows = []
+    if sel_state is not None:
+        try:
+            sel_rows = [i for i in sel_state.selection.rows if i < len(stored)]
+        except AttributeError:
+            sel_rows = [i for i in sel_state["selection"]["rows"]
+                        if i < len(stored)]
+    picked = [stored[i] for i in sel_rows]
+    one = picked[0] if len(picked) == 1 else None
+
+    def _reset_selection():
+        st.session_state.runs_tbl_v = st.session_state.get("runs_tbl_v", 0) + 1
+
+    sc1, sc2, sc3 = st.columns([2.4, 1, 1], vertical_alignment="bottom")
+    if one is not None:
+        rkey = f"rename_{one.id}_{NONCE}"
+        sc1.text_input("Name of the selected run (press Enter to rename)",
+                       value=one.record.label, key=rkey, max_chars=200,
+                       on_change=_rename_run, args=(one.id, rkey))
+    else:
+        sc1.text_input("Name of the selected run (press Enter to rename)",
+                       value="", disabled=True, key=f"rename_none_{NONCE}",
+                       placeholder=("Select one run in the table to rename it"
+                                    if stored else "No runs saved yet"))
+    if sc2.button("Restore run", width='stretch', type="primary",
+                  disabled=one is None, icon=":material/history:",
+                  help="Load the selected run's holdings, figures and "
+                       "settings back into the app."):
+        st.session_state.pending_restore = one
+        _reset_selection()
+        st.rerun()
+    n_del = len(picked)
+    if sc3.button(f"Delete ({n_del})" if n_del else "Delete", width='stretch',
+                  disabled=not picked, icon=":material/delete:"):
+        st.session_state._undo_ids = DB.delete_runs(UID, [x.id for x in picked])
+        _reset_selection()
+        st.rerun()
+
+    undo = st.session_state.get("_undo_ids")
+    if undo:
+        u1, _, u2 = st.columns([2.4, 1, 1], vertical_alignment="center")
+        u1.markdown(f'<div class="muted">Deleted {len(undo)} run'
+                    f'{"s" if len(undo) != 1 else ""}.</div>',
+                    unsafe_allow_html=True)
+        if u2.button("Undo", width='stretch', icon=":material/undo:"):
+            n = DB.undelete_runs(UID, undo)
+            st.session_state._undo_ids = None
+            if n < len(undo):
+                st.toast("Runs that were re-run after deleting are already "
+                         "back in the list.")
+            _reset_selection()
+            st.rerun()
+
+    if current_digest is not None:
+        cur = next((x for x in stored if x.digest == current_digest), None)
+        st.markdown(
+            f'<div class="muted">The run on screen is saved as '
+            f'<b>#{cur.record.seq} · {cur.record.label}</b>.</div>' if cur else
+            '<div class="muted">The run on screen is not in the list (it was '
+            'deleted). Change any input, or press <i>Undo</i>, to save it '
+            'again.</div>', unsafe_allow_html=True)
+
+    if not saved:
+        st.caption("No runs saved yet. Results are saved here as soon as a mix "
+                   "adds up to 100%.")
+        return
+
+    # Compare: the selected runs, or the most recent eight.
+    chart_runs = picked if len(picked) >= 2 else stored[:8]
+    if len(chart_runs) >= 2:
+        cmp = pd.DataFrame([{
+            "run": f"{x.record.seq}. {x.record.label}",
+            "val": x.record.median_wealth_x * amount,
+            "val_l": money(x.record.median_wealth_x * amount),
+            "loss": f"{x.record.p_loss_pct:.1f}%",
+            "yrs": f"{x.record.years} yrs",
+            "vol": f"±{x.record.analytic_vol_pct:.1f}%"} for x in chart_runs])
+        bars = alt.Chart(cmp).mark_bar(color=ACCENT, cornerRadiusEnd=4,
+                                       height=18).encode(
+            x=alt.X("val:Q", title=None, axis=alt.Axis(
+                format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                domain=False, ticks=False)),
+            y=alt.Y("run:N", sort=list(cmp["run"]), title=None,
+                    axis=alt.Axis(labelFontSize=12, labelColor=INK,
+                                  domain=False, ticks=False, labelLimit=260)),
+            tooltip=[alt.Tooltip("run:N", title="Scenario"),
+                     alt.Tooltip("val_l:N", title="Typical value"),
+                     alt.Tooltip("yrs:N", title="Horizon"),
+                     alt.Tooltip("vol:N", title="Yearly swings"),
+                     alt.Tooltip("loss:N", title="Chance of loss")])
+        txt = alt.Chart(cmp).mark_text(align="left", dx=6, fontSize=12,
+                                       fontWeight=600, color=INK_2).encode(
+            x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
+        which = ("the selected scenarios" if len(picked) >= 2 else
+                 "the most recent scenarios — select rows to compare others")
+        st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
+                    f'the end of {which}</div>', unsafe_allow_html=True)
+        st.altair_chart((bars + txt).properties(
+            height=max(36 * len(cmp), 90)).configure_view(strokeWidth=0),
+            width='stretch')
+
+    hist_df = rs.history_table(saved)
+    hist_df.insert(0, "On screen", ["●" if x.digest == current_digest else ""
+                                    for x in stored])
+    st.dataframe(
+        hist_df, hide_index=True, width='stretch', key=tbl_key,
+        on_select="rerun", selection_mode="multi-row",
+        column_config={
+            "On screen": st.column_config.TextColumn("", width="small",
+                                                     help="The run shown above"),
+            "#": st.column_config.NumberColumn(width="small"),
+            "Label": st.column_config.TextColumn("Scenario", width="medium"),
+            "Saved": st.column_config.TextColumn(width="medium"),
+            "Paths": st.column_config.NumberColumn("Futures"),
+            "Sleeves": st.column_config.NumberColumn("Holdings"),
+            "Return %": st.column_config.NumberColumn("Avg return %",
+                                                      format="%.2f"),
+            "Volatility %": st.column_config.NumberColumn("Swings %",
+                                                          format="%.2f"),
+            "Median wealth": st.column_config.NumberColumn("Typical ×",
+                                                           format="%.3f×"),
+            "P(loss) %": st.column_config.NumberColumn("Chance of loss %",
+                                                       format="%.2f"),
+        })
+    export = [x.record for x in (picked or stored)]
+    export = sorted(export, key=lambda r: r.seq)
+    st.download_button(
+        f"Download Excel ({len(export)} {'selected ' if picked else ''}"
+        f"scenario{'s' if len(export) != 1 else ''})",
+        rs.to_excel_bytes(export), "keepp_saved_runs.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        icon=":material/download:")
+
+
 if off:
     for t in (tab_over, tab_opt, tab_det):
         with t:
@@ -944,13 +1292,17 @@ if off:
                 st.info("**Start on the Your mix tab.** Pick the investments "
                         "this portfolio holds from the three asset-class "
                         "dropdowns and give each one a share. Results appear "
-                        "here as soon as the shares add up to 100%.",
+                        "here as soon as the shares add up to 100%. To pick up "
+                        "an earlier run instead, restore it from **Details & "
+                        "saved runs**.",
                         icon=":material/arrow_back:")
             else:
                 st.warning(
                     f"Your mix adds up to **{wsum:.1f}%**, not 100%. Open "
                     f"**Your mix** to adjust it, or press *Scale everything "
                     f"to 100%* there.", icon=":material/warning:")
+    with tab_det:
+        saved_runs_panel()
     st.stop()
 
 
@@ -961,6 +1313,24 @@ w_t, r_t, v_t, corr_full = sleeve_inputs(alloc)
 with st.spinner("Simulating markets…"):
     res, repaired = run_sim(w_t, r_t, v_t, tuple(corr_full.flatten()),
                             int(paths), int(years), int(seed))
+# Auto-save: every distinct run goes into the user's history. The digest
+# covers everything that determines the numbers, so a rerun caused by an
+# unrelated click (or re-running a scenario already in the list) saves
+# nothing. Remembering the last digest also keeps a run the user has just
+# deleted from popping straight back in.
+RUN_MODE = "Base" if is_base else "Custom"
+RUN_DIGEST = rs.run_digest(RUN_MODE, alloc[rs.ALLOC_COLS].to_dict("records"),
+                           paths, years, seed)
+if st.session_state.get("_last_digest") != RUN_DIGEST:
+    try:
+        DB.save_run(UID, rs.make_record(0, "", RUN_MODE, alloc, paths, years,
+                                        seed, res),
+                    RUN_DIGEST, pool=POOL_LINES if is_base else [])
+        st.session_state._last_digest = RUN_DIGEST
+    except Exception as e:                # never lose the results over a save
+        st.toast(f"This run could not be saved ({type(e).__name__}). It will "
+                 f"be retried on the next change.", icon=":material/error:")
+
 term = res.rows[-1]
 T = term["_years"]
 P_LOSS = term["P(loss)"]
@@ -1924,84 +2294,7 @@ with tab_det:
                        "text/csv", icon=":material/download:")
 
     # ---- saved runs ------------------------------------------------------
-    section("Saved scenarios",
-            "Save the current mix and results to compare several options side by "
-            "side. Saved scenarios last until you close this browser tab — "
-            "download the Excel file to keep them.")
-    saved = st.session_state.saved_runs
-    next_seq = len(saved) + 1
-    default_label = rs.auto_label(next_seq, "Base" if is_base else "Custom", years)
-
-    sc1, sc2, sc3 = st.columns([2.4, 1, 1], vertical_alignment="bottom")
-    label_in = sc1.text_input("Name this scenario", value=default_label,
-                              key=f"run_label_{NONCE}",
-                              placeholder="e.g. More stocks")
-    if sc2.button("Save scenario", width='stretch', type="primary"):
-        st.session_state.saved_runs.append(rs.make_record(
-            next_seq, label_in, "Base" if is_base else "Custom",
-            alloc, paths, years, seed, res))
-        bump_editors()
-        st.rerun()
-    if sc3.button("Clear all", width='stretch', disabled=not saved):
-        st.session_state.saved_runs = []
-        st.rerun()
-
-    if saved:
-        if len(saved) >= 2:
-            cmp = pd.DataFrame([{
-                "run": f"{r.seq}. {r.label}",
-                "val": r.median_wealth_x * amount,
-                "val_l": money(r.median_wealth_x * amount),
-                "loss": f"{r.p_loss_pct:.1f}%",
-                "yrs": f"{r.years} yrs",
-                "vol": f"±{r.analytic_vol_pct:.1f}%"} for r in saved])
-            bars = alt.Chart(cmp).mark_bar(color=ACCENT, cornerRadiusEnd=4,
-                                           height=18).encode(
-                x=alt.X("val:Q", title=None, axis=alt.Axis(
-                    format="$.3~s", labelColor=INK_3, gridColor=GRID,
-                    domain=False, ticks=False)),
-                y=alt.Y("run:N", sort=list(cmp["run"]), title=None,
-                        axis=alt.Axis(labelFontSize=12, labelColor=INK,
-                                      domain=False, ticks=False, labelLimit=260)),
-                tooltip=[alt.Tooltip("run:N", title="Scenario"),
-                         alt.Tooltip("val_l:N", title="Typical value"),
-                         alt.Tooltip("yrs:N", title="Horizon"),
-                         alt.Tooltip("vol:N", title="Yearly swings"),
-                         alt.Tooltip("loss:N", title="Chance of loss")])
-            txt = alt.Chart(cmp).mark_text(align="left", dx=6, fontSize=12,
-                                           fontWeight=600, color=INK_2).encode(
-                x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
-            st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
-                        f'the end of each scenario</div>', unsafe_allow_html=True)
-            st.altair_chart((bars + txt).properties(
-                height=max(36 * len(cmp), 90)).configure_view(strokeWidth=0),
-                width='stretch')
-
-        hist_df = rs.history_table(saved)
-        st.dataframe(
-            hist_df, hide_index=True, width='stretch',
-            column_config={
-                "#": st.column_config.NumberColumn(width="small"),
-                "Label": st.column_config.TextColumn("Scenario", width="medium"),
-                "Saved": st.column_config.TextColumn(width="medium"),
-                "Paths": st.column_config.NumberColumn("Futures"),
-                "Sleeves": st.column_config.NumberColumn("Holdings"),
-                "Return %": st.column_config.NumberColumn("Avg return %",
-                                                          format="%.2f"),
-                "Volatility %": st.column_config.NumberColumn("Swings %",
-                                                              format="%.2f"),
-                "Median wealth": st.column_config.NumberColumn("Typical ×",
-                                                               format="%.3f×"),
-                "P(loss) %": st.column_config.NumberColumn("Chance of loss %",
-                                                           format="%.2f"),
-            })
-        st.download_button(
-            f"Download Excel ({len(saved)} scenario{'s' if len(saved) != 1 else ''})",
-            rs.to_excel_bytes(saved), "keepp_saved_runs.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            icon=":material/download:")
-    else:
-        st.caption("No scenarios saved yet.")
+    saved_runs_panel(RUN_DIGEST)
 
     # ---- sources ---------------------------------------------------------
     section("Where the assumptions come from")
