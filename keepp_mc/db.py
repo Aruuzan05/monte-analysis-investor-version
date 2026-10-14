@@ -33,7 +33,7 @@ from typing import Optional, Sequence
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
-import run_store as rs
+from . import run_store as rs
 
 SESSION_TTL_DAYS = 30
 MIN_PASSWORD_LEN = 8
@@ -163,6 +163,8 @@ class RunDB:
             # before use instead of failing the first query after a lull.
             kw["pool_pre_ping"] = True
             kw["pool_recycle"] = 300
+            # Fail fast on a network drop rather than hanging the page.
+            kw["connect_args"] = {"connect_timeout": 10}
         self.engine = sa.create_engine(url, **kw)
         if url.startswith("sqlite"):
             @sa.event.listens_for(self.engine, "connect")
@@ -285,7 +287,8 @@ class RunDB:
             return None
         payload = json.dumps({"sleeves": record.sleeves,
                               "horizon_rows": record.horizon_rows,
-                              "pool": list(pool)}, default=float)
+                              "pool": list(pool),
+                              "source": record.source}, default=float)
         for _ in range(3):                     # retry on a concurrent seq clash
             try:
                 with self.engine.begin() as c:
@@ -294,7 +297,8 @@ class RunDB:
                         .where(RUNS.c.user_id == user_id)).scalar_one()) + 1
                     label = (record.label or "").strip()
                     if not label or label == f"Run {record.seq}":
-                        label = rs.auto_label(seq, record.mode, record.years)
+                        label = rs.auto_label(seq, record.mode, record.years,
+                                              record.source)
                     new_id = c.execute(RUNS.insert().values(
                         user_id=user_id, seq=seq, label=label[:200],
                         created_at=record.created_at, mode=record.mode,
@@ -322,7 +326,8 @@ class RunDB:
             analytic_vol_pct=row.analytic_vol_pct,
             sim_vol_pct=row.sim_vol_pct, median_wealth_x=row.median_wealth_x,
             p_loss_pct=row.p_loss_pct, elapsed_ms=row.elapsed_ms,
-            horizon_rows=p["horizon_rows"])
+            horizon_rows=p["horizon_rows"],
+            source=p.get("source", "jpm"))
         return StoredRun(id=int(row.id), digest=row.digest,
                          pool=tuple(p.get("pool", [])), record=rec)
 

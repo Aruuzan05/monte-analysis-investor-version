@@ -1,6 +1,6 @@
 """Checks for the mean-variance optimizer.
 
-    python test_optimizer.py
+    python tests/test_optimizer.py
 
 Covers the properties in the build spec: the closed-form tangency match, the
 two-asset analytic minimum-variance weight, frontier monotonicity, the
@@ -9,9 +9,15 @@ sets raise a named error rather than returning garbage.
 """
 import numpy as np
 
-import jpm_ltcma as J
-import optimizer as O
-from engine import simulate
+import sys
+from pathlib import Path
+
+# Run as a script (python tests/test_x.py): put the repo root on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from keepp_mc import jpm_ltcma as J
+from keepp_mc import optimizer as O
+from keepp_mc.engine import simulate
 
 ok = True
 

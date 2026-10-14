@@ -188,7 +188,7 @@ def category_of(label_or_name):
 # as 0.01. Repairing the whole matrix once — rather than each sub-matrix at
 # run time — also means every sub-matrix the app can build is automatically
 # valid, because every principal sub-matrix of a PSD matrix is itself PSD.
-_CSV = Path(__file__).with_name("jpm_correlations.csv")
+_CSV = Path(__file__).parent / "data" / "jpm_correlations.csv"
 
 
 def _higham(A, iters=200, tol=1e-12):

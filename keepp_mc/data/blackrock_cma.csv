@@ -1,0 +1,103 @@
+scenario,asset_class,asset,index,ret_5y,ret_7y,ret_10y,ret_15y,ret_20y,ret_25y,ret_30y,vol,corr_gov_bonds,corr_equities
+Starting point,Equities,Europe large cap equities,MSCI Europe index,7.087309,7.130529,7.428417,7.997649,8.432137,8.733765,8.944632,19.333951,0.001498,0.903115
+Starting point,Equities,US large cap equities,MSCI USA Index,9.439035,9.193526,8.967651,8.731054,8.592534,8.501284,8.43518,19.347772,-0.017236,0.874298
+Starting point,Equities,Emerging large cap equities,MSCI Emerging Markets Index,7.945434,8.429136,8.798476,9.383231,9.83796,10.156483,10.380018,23.076868,0.000163,0.781036
+Starting point,Equities,Global ex-US large cap equities,MSCI World ex-US Index,7.455317,7.56016,7.768384,8.11211,8.36645,8.540502,8.660149,17.565568,0.012647,0.925683
+Starting point,Equities,Global large cap equities,MSCI World Index,8.889686,8.741567,8.636123,8.55997,8.529709,8.511405,8.496297,18.27782,-0.009908,0.915643
+Starting point,Equities,All country large cap equities,MSCI All Country World Index,9.263363,9.146495,9.015126,8.912188,8.870444,8.84589,8.826821,18.375925,-0.00862,0.919362
+Starting point,Equities,Listed REITs,FTSE EPRA Nareit Developed Index (Gross),7.406183,7.254741,7.431947,7.660611,7.796182,7.881388,7.936494,17.588791,0.202322,0.733274
+Starting point,Equities,US small cap equities,MSCI USA Small Cap Index,7.039849,6.876443,7.008477,7.250112,7.420701,7.535057,7.612078,20.980451,-0.0282,0.882097
+Starting point,Equities,Listed infrastructure equities,FTSE Developed Core Infrastructure Net Index,7.54726,7.46212,7.665503,7.752999,7.737469,7.708851,7.681151,13.150621,0.116243,0.755627
+Starting point,Equities,China-Broad market,MSCI Emerging - China in CNY,8.982504,9.566011,10.267323,10.918891,11.268388,11.484995,11.628762,27.053959,-0.066224,0.556395
+Starting point,Equities,China-Ashares,MSCI China A Inclusion NET Index,8.303235,8.478484,8.672705,9.136329,9.52151,9.795166,9.98765,31.485682,-0.013166,0.41468
+Starting point,Fixed income,US aggregate bond index,Bloomberg Barclays U.S. Aggregate Index,4.517128,4.89483,4.879157,4.834664,4.808308,4.788922,4.772935,4.764939,0.779084,-0.054458
+Starting point,Fixed income,US agency MBS,Bloomberg Barclays US MBS Index,4.643733,5.019999,4.972848,4.900625,4.859464,4.830898,4.808376,5.295431,0.737223,-0.101375
+Starting point,Fixed income,US credit (all maturities),Bloomberg Barclays U.S. Credit Index,4.570286,5.198385,5.35347,5.433092,5.464535,5.476947,5.48287,5.674181,0.653465,0.255548
+Starting point,Fixed income,US credit (10+ years),Bloomberg Barclays Long Credit index,4.003516,5.198432,5.530365,5.726409,5.801372,5.830117,5.844487,10.699685,0.631085,0.266954
+Starting point,Fixed income,US government (all maturities),Bloomberg Barclays Government Index,4.591044,4.854321,4.763223,4.664912,4.614059,4.581458,4.556379,4.710292,0.773314,-0.24449
+Starting point,Fixed income,US government (10+ years),Bloomberg Barclays Long Goverment index,4.733478,5.483745,5.386758,5.259443,5.178934,5.115986,5.06745,11.667971,0.757877,-0.195169
+Starting point,Fixed income,USD EM debt,JP Morgan EMBI Global Diversified Index,4.235145,5.394881,6.01391,6.358084,6.46107,6.500849,6.519121,8.788159,0.397352,0.482055
+Starting point,Fixed income,US high yield,Bloomberg Barclays U.S. High Yield Index,5.627897,6.190461,6.430372,6.548024,6.586607,6.604964,6.619459,6.54658,0.140675,0.617345
+Starting point,Fixed income,US inflation-linked government,Bloomberg Barclays US Government Inflation-Linked Bond Index,5.227858,5.412153,5.181438,4.942809,4.821109,4.735074,4.664717,5.182977,0.562616,0.136421
+Starting point,Fixed income,Local-currency EM debt,JP Morgan GBI-EM Global Diversified Index,5.238922,5.307322,5.349365,5.431915,5.492791,5.530845,5.552813,9.263012,0.321014,0.507227
+Starting point,Fixed income,US cash,Citigroup 3-Month Treasury Bill Index,3.790622,3.726579,3.66477,3.610327,3.585175,3.568412,3.554008,0.0,,
+Starting point,Fixed income,Global ex-US treasuries (hedged),Bloomberg Barclays Global Aggregate Treasury Index ex US,4.292964,4.343079,4.366831,4.435681,4.458841,4.458433,4.452257,3.113002,1.0,-0.065133
+Starting point,Fixed income,Global aggregate bonds (hedged),Bloomberg Barclays Global Aggregate Index,4.25416,4.481026,4.510696,4.542998,4.553073,4.55139,4.546038,3.550835,0.908111,0.005536
+Starting point,Fixed income,US bank loans,S&P/LSTA Leveraged Loan Index,5.156851,5.540449,5.791764,5.926278,5.969848,5.988958,6.001487,7.928312,-0.141901,0.569981
+Starting point,Fixed income,Chinese treasuries,BBG Barc China Treasury + Policy Bank Total Return Index,2.227612,2.214747,2.165448,2.460745,2.790629,3.040738,3.220382,8.697915,0.259917,0.198264
+Starting point,Private markets,HY infrastructure debt,BlackRock Proxy,6.261441,6.750959,7.077522,7.287268,7.382735,7.439056,7.478838,8.117364,-0.144795,0.615548
+Starting point,Private markets,US private equity (buyout),eFront Insights Research US Private Equity Buyout Index,13.923187,14.570787,15.887885,16.427797,16.321838,16.148071,15.996555,26.057642,-0.049016,0.747163
+Starting point,Private markets,Global infrastructure equity,eFront Insights Research Global Infrastructure Index,13.621995,13.583391,13.586607,13.317667,13.042103,12.834028,12.679824,15.018456,-0.017487,0.726055
+Starting point,Private markets,Hedge funds (global),HFRI Composite Index,9.381556,9.389201,9.291356,9.212093,9.210748,9.218573,9.223541,7.395137,-0.033289,0.557644
+Starting point,Private markets,US core real estate,NCREIF Open-end Diversified Core Equity (NFI-ODCE),6.180949,6.258098,6.330744,6.561655,6.767945,6.915634,7.018502,10.709879,0.248251,0.614828
+Starting point,Private markets,Global direct lending (levered),BlackRock Proxy,11.860155,11.956765,11.792455,11.625246,11.572379,11.554325,11.547737,10.418281,-0.107302,0.689611
+Starting point,Private markets,Developed infrastructure debt,BlackRock Proxy,4.574946,5.133466,5.468285,5.833028,6.052888,6.190245,6.283569,6.780611,0.528723,0.35961
+Starting point,Private markets,Global direct lending (unlevered),BlackRock Proxy,9.000049,9.229323,9.30702,9.272109,9.222128,9.184452,9.157146,6.989629,-0.08656,0.733148
+AI productivity boom,Equities,Europe large cap equities,MSCI Europe index,6.291388,6.356201,6.64977,7.217245,7.625383,7.918344,8.149687,19.333951,0.001498,0.903115
+AI productivity boom,Equities,US large cap equities,MSCI USA Index,17.731916,17.400787,15.943234,13.805635,12.344587,11.374488,10.723627,19.347772,-0.017236,0.874298
+AI productivity boom,Equities,Emerging large cap equities,MSCI Emerging Markets Index,8.968726,9.751232,9.867562,10.011747,10.146659,10.256377,10.358092,23.076868,0.000163,0.781036
+AI productivity boom,Equities,Global ex-US large cap equities,MSCI World ex-US Index,6.103438,6.378524,6.690603,7.125645,7.404572,7.601489,7.762828,17.565568,0.012647,0.925683
+AI productivity boom,Equities,Global large cap equities,MSCI World Index,14.420942,14.268467,13.328204,11.932922,10.967343,10.326552,9.90344,18.27782,-0.009908,0.915643
+AI productivity boom,Equities,All country large cap equities,MSCI All Country World Index,14.188094,14.068531,13.171033,11.874223,10.988051,10.402826,10.018762,18.375925,-0.00862,0.919362
+AI productivity boom,Equities,Listed REITs,FTSE EPRA Nareit Developed Index (Gross),9.108363,8.673417,8.524249,8.309345,8.112534,7.981292,7.910911,17.588791,0.202322,0.733274
+AI productivity boom,Equities,US small cap equities,MSCI USA Small Cap Index,8.41483,8.014351,7.78246,7.608981,7.498661,7.438358,7.420935,20.980451,-0.0282,0.882097
+AI productivity boom,Equities,Listed infrastructure equities,FTSE Developed Core Infrastructure Net Index,4.896762,5.177667,5.758035,6.19036,6.339462,6.421914,6.495547,13.150621,0.116243,0.755627
+AI productivity boom,Equities,China-Broad market,MSCI Emerging - China in CNY,10.794702,12.209302,13.146648,13.290736,13.032917,12.796603,12.633431,27.053959,-0.066224,0.556395
+AI productivity boom,Equities,China-Ashares,MSCI China A Inclusion NET Index,8.424981,9.483326,9.852314,10.024533,10.063796,10.086371,10.122975,31.485682,-0.013166,0.41468
+AI productivity boom,Fixed income,US aggregate bond index,Bloomberg Barclays U.S. Aggregate Index,5.040146,4.804706,4.573022,4.373082,4.23772,4.119507,4.0537,4.764939,0.779084,-0.054458
+AI productivity boom,Fixed income,US agency MBS,Bloomberg Barclays US MBS Index,5.212763,4.92703,4.654769,4.426227,4.278109,4.148989,4.075273,5.295431,0.737223,-0.101375
+AI productivity boom,Fixed income,US credit (all maturities),Bloomberg Barclays U.S. Credit Index,5.348442,5.225718,5.070141,4.92006,4.806602,4.696461,4.636105,5.674181,0.653465,0.255548
+AI productivity boom,Fixed income,US credit (10+ years),Bloomberg Barclays Long Credit index,6.28829,6.063671,5.794796,5.556174,5.402112,5.237285,5.134184,10.699685,0.631085,0.266954
+AI productivity boom,Fixed income,US government (all maturities),Bloomberg Barclays Government Index,4.986087,4.70535,4.443277,4.222669,4.076627,3.954611,3.886964,4.710292,0.773314,-0.24449
+AI productivity boom,Fixed income,US government (10+ years),Bloomberg Barclays Long Goverment index,7.004599,6.291404,5.654534,5.152651,4.87716,4.635655,4.479929,11.667971,0.757877,-0.195169
+AI productivity boom,Fixed income,USD EM debt,JP Morgan EMBI Global Diversified Index,5.393795,5.667645,5.730211,5.763575,5.762,5.724305,5.713218,8.788159,0.397352,0.482055
+AI productivity boom,Fixed income,US high yield,Bloomberg Barclays U.S. High Yield Index,5.392774,5.366807,5.259483,5.095552,4.953145,4.840387,4.782404,6.54658,0.140675,0.617345
+AI productivity boom,Fixed income,US inflation-linked government,Bloomberg Barclays US Government Inflation-Linked Bond Index,5.640416,5.217067,4.826735,4.501957,4.261338,4.031793,3.874907,5.182977,0.562616,0.136421
+AI productivity boom,Fixed income,Local-currency EM debt,JP Morgan GBI-EM Global Diversified Index,5.146018,5.361755,5.384322,5.323734,5.233224,5.159417,5.123686,9.263012,0.321014,0.507227
+AI productivity boom,Fixed income,US cash,Citigroup 3-Month Treasury Bill Index,3.102471,3.058847,3.008607,2.945975,2.883099,2.848425,2.846318,0.0,,
+AI productivity boom,Fixed income,Global ex-US treasuries (hedged),Bloomberg Barclays Global Aggregate Treasury Index ex US,4.611718,4.32068,4.138254,3.99814,3.892036,3.798568,3.747285,3.113002,1.0,-0.065133
+AI productivity boom,Fixed income,Global aggregate bonds (hedged),Bloomberg Barclays Global Aggregate Index,4.589632,4.373222,4.20413,4.06375,3.959085,3.865024,3.814708,3.550835,0.908111,0.005536
+AI productivity boom,Fixed income,US bank loans,S&P/LSTA Leveraged Loan Index,4.156787,4.230658,4.221409,4.128336,4.026386,3.960222,3.936216,7.928312,-0.141901,0.569981
+AI productivity boom,Fixed income,Chinese treasuries,BBG Barc China Treasury + Policy Bank Total Return Index,1.314264,1.228479,1.164317,1.487902,1.807235,2.030138,2.20698,8.697915,0.259917,0.198264
+AI productivity boom,Private markets,HY infrastructure debt,BlackRock Proxy,5.873468,6.058825,6.125536,6.101012,6.039052,5.997303,5.989638,8.117364,-0.144795,0.615548
+AI productivity boom,Private markets,US private equity (buyout),eFront Insights Research US Private Equity Buyout Index,26.476993,26.634342,27.61212,26.343476,24.492401,23.064379,22.04659,26.057642,-0.049016,0.747163
+AI productivity boom,Private markets,Global infrastructure equity,eFront Insights Research Global Infrastructure Index,12.975411,13.128725,13.020456,12.628483,12.278245,12.036807,11.88798,15.018456,-0.017487,0.726055
+AI productivity boom,Private markets,Hedge funds (global),HFRI Composite Index,10.829935,10.554496,9.953181,9.390248,9.125486,8.983981,8.915725,7.395137,-0.033289,0.557644
+AI productivity boom,Private markets,US core real estate,NCREIF Open-end Diversified Core Equity (NFI-ODCE),6.821992,6.879053,6.475341,6.313604,6.342607,6.40392,6.478577,10.709879,0.248251,0.614828
+AI productivity boom,Private markets,Global direct lending (levered),BlackRock Proxy,11.206545,11.072855,10.737027,10.359507,10.1303,9.994066,9.924919,10.418281,-0.107302,0.689611
+AI productivity boom,Private markets,Developed infrastructure debt,BlackRock Proxy,3.452348,3.38699,3.625641,4.09135,4.410924,4.600474,4.751173,6.780611,0.528723,0.35961
+AI productivity boom,Private markets,Global direct lending (unlevered),BlackRock Proxy,8.285065,8.308371,8.217579,8.027912,7.86257,7.754172,7.700187,6.989629,-0.08656,0.733148
+Global risk premia rise,Equities,Europe large cap equities,MSCI Europe index,6.871601,6.958275,7.359676,7.991523,8.432504,8.73618,8.948523,19.333951,0.001498,0.903115
+Global risk premia rise,Equities,US large cap equities,MSCI USA Index,1.260317,1.192374,2.016572,3.40226,4.391051,5.075622,5.558374,19.347772,-0.017236,0.874298
+Global risk premia rise,Equities,Emerging large cap equities,MSCI Emerging Markets Index,3.631933,4.341125,5.35354,6.793098,7.80352,8.498617,8.987577,23.076868,0.000163,0.781036
+Global risk premia rise,Equities,Global ex-US large cap equities,MSCI World ex-US Index,7.176681,7.331985,7.652789,8.069207,8.337684,8.519011,8.643834,17.565568,0.012647,0.925683
+Global risk premia rise,Equities,Global large cap equities,MSCI World Index,2.843382,2.83464,3.527446,4.658074,5.455997,6.006592,6.393749,18.27782,-0.009908,0.915643
+Global risk premia rise,Equities,All country large cap equities,MSCI All Country World Index,3.963302,3.983306,4.569702,5.52889,6.208284,6.677727,7.007554,18.375925,-0.00862,0.919362
+Global risk premia rise,Equities,Listed REITs,FTSE EPRA Nareit Developed Index (Gross),3.947608,3.725025,4.301858,5.239637,5.87974,6.317241,6.623158,17.588791,0.202322,0.733274
+Global risk premia rise,Equities,US small cap equities,MSCI USA Small Cap Index,2.989007,2.864133,3.514936,4.569961,5.303068,5.806829,6.160251,20.980451,-0.0282,0.882097
+Global risk premia rise,Equities,Listed infrastructure equities,FTSE Developed Core Infrastructure Net Index,6.587356,6.268583,6.535627,6.859488,7.022306,7.123422,7.189645,13.150621,0.116243,0.755627
+Global risk premia rise,Equities,China-Broad market,MSCI Emerging - China in CNY,5.728836,6.061321,7.05778,8.389675,9.259741,9.844875,10.251733,27.053959,-0.066224,0.556395
+Global risk premia rise,Equities,China-Ashares,MSCI China A Inclusion NET Index,5.891064,6.036147,6.574799,7.543221,8.266161,8.772824,9.130919,31.485682,-0.013166,0.41468
+Global risk premia rise,Fixed income,US aggregate bond index,Bloomberg Barclays U.S. Aggregate Index,4.332616,4.744596,5.110077,5.361012,5.355043,5.279913,5.2089,4.764939,0.779084,-0.054458
+Global risk premia rise,Fixed income,US agency MBS,Bloomberg Barclays US MBS Index,4.374677,4.806025,5.189051,5.453757,5.443317,5.357606,5.276897,5.295431,0.737223,-0.101375
+Global risk premia rise,Fixed income,US credit (all maturities),Bloomberg Barclays U.S. Credit Index,4.190648,4.864493,5.45165,5.881938,5.95981,5.929789,5.889499,5.674181,0.653465,0.255548
+Global risk premia rise,Fixed income,US credit (10+ years),Bloomberg Barclays Long Credit index,2.47864,3.761027,4.89863,5.838589,6.114009,6.145021,6.130068,10.699685,0.631085,0.266954
+Global risk premia rise,Fixed income,US government (all maturities),Bloomberg Barclays Government Index,4.534696,4.81745,5.074091,5.236211,5.188924,5.092395,5.007156,4.710292,0.773314,-0.24449
+Global risk premia rise,Fixed income,US government (10+ years),Bloomberg Barclays Long Goverment index,3.175643,4.023941,4.815982,5.502185,5.633399,5.559061,5.465672,11.667971,0.757877,-0.195169
+Global risk premia rise,Fixed income,USD EM debt,JP Morgan EMBI Global Diversified Index,3.429824,4.714448,5.910617,6.698486,6.869649,6.8758,6.852445,8.788159,0.397352,0.482055
+Global risk premia rise,Fixed income,US high yield,Bloomberg Barclays U.S. High Yield Index,5.480117,6.020147,6.494004,6.81473,6.878716,6.87861,6.874203,6.54658,0.140675,0.617345
+Global risk premia rise,Fixed income,US inflation-linked government,Bloomberg Barclays US Government Inflation-Linked Bond Index,5.380438,5.51174,5.617775,5.626509,5.490881,5.32538,5.182607,5.182977,0.562616,0.136421
+Global risk premia rise,Fixed income,Local-currency EM debt,JP Morgan GBI-EM Global Diversified Index,4.842687,5.034104,5.183174,5.351739,5.447005,5.512048,5.555289,9.263012,0.321014,0.507227
+Global risk premia rise,Fixed income,US cash,Citigroup 3-Month Treasury Bill Index,4.330204,4.170171,4.046313,3.903584,3.80772,3.746446,3.702354,0.0,,
+Global risk premia rise,Fixed income,Global ex-US treasuries (hedged),Bloomberg Barclays Global Aggregate Treasury Index ex US,4.436888,4.700866,4.713178,4.723468,4.699514,4.667718,4.640556,3.113002,1.0,-0.065133
+Global risk premia rise,Fixed income,Global aggregate bonds (hedged),Bloomberg Barclays Global Aggregate Index,4.255019,4.607348,4.791567,4.918379,4.910919,4.867906,4.827551,3.550835,0.908111,0.005536
+Global risk premia rise,Fixed income,US bank loans,S&P/LSTA Leveraged Loan Index,5.2752,5.588088,5.883108,6.076583,6.135421,6.163635,6.184426,7.928312,-0.141901,0.569981
+Global risk premia rise,Fixed income,Chinese treasuries,BBG Barc China Treasury + Policy Bank Total Return Index,2.724075,2.647015,2.529676,2.797643,3.122033,3.381168,3.57177,8.697915,0.259917,0.198264
+Global risk premia rise,Private markets,HY infrastructure debt,BlackRock Proxy,5.727384,6.125692,6.543297,6.904688,7.095442,7.224651,7.320211,8.117364,-0.144795,0.615548
+Global risk premia rise,Private markets,US private equity (buyout),eFront Insights Research US Private Equity Buyout Index,7.351311,7.643312,9.355268,10.989889,11.777726,12.245398,12.55372,26.057642,-0.049016,0.747163
+Global risk premia rise,Private markets,Global infrastructure equity,eFront Insights Research Global Infrastructure Index,14.031367,13.854702,13.866334,13.575112,13.251537,13.009736,12.832301,15.018456,-0.017487,0.726055
+Global risk premia rise,Private markets,Hedge funds (global),HFRI Composite Index,7.981116,7.702249,7.659922,7.911917,8.169452,8.365344,8.506239,7.395137,-0.033289,0.557644
+Global risk premia rise,Private markets,US core real estate,NCREIF Open-end Diversified Core Equity (NFI-ODCE),0.284214,2.744402,6.364864,8.294766,8.523143,8.449425,8.335184,10.709879,0.248251,0.614828
+Global risk premia rise,Private markets,Global direct lending (levered),BlackRock Proxy,10.519741,10.695421,10.866012,11.003213,11.082776,11.147379,11.19884,10.418281,-0.107302,0.689611
+Global risk premia rise,Private markets,Developed infrastructure debt,BlackRock Proxy,5.084024,5.816449,6.365955,6.770877,6.876973,6.888486,6.883836,6.780611,0.528723,0.35961
+Global risk premia rise,Private markets,Global direct lending (unlevered),BlackRock Proxy,8.707993,8.834814,8.960077,9.012763,9.012641,9.014221,9.017453,6.989629,-0.08656,0.733148

@@ -1,9 +1,9 @@
 """
 Account admin for the Keepp simulator — run from a terminal, not the app.
 
-    python manage_users.py add <username>        # prompts for a password
-    python manage_users.py reset <username>      # new password, signs them out
-    python manage_users.py list
+    python scripts/manage_users.py add <username>        # prompts for a password
+    python scripts/manage_users.py reset <username>      # new password, signs them out
+    python scripts/manage_users.py list
 
 Uses the same database the app does: KEEPP_DATABASE_URL if set, otherwise
 [database] url from .streamlit/secrets.toml, otherwise the local SQLite file
@@ -18,20 +18,22 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-import db as dbm
+# Run as a script from anywhere: paths and imports are relative to the repo root.
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-HERE = Path(__file__).parent
+from keepp_mc import db as dbm  # noqa: E402
 
 
 def database_url() -> str:
     if os.environ.get("KEEPP_DATABASE_URL"):
         return os.environ["KEEPP_DATABASE_URL"]
-    sec = HERE / ".streamlit" / "secrets.toml"
+    sec = ROOT / ".streamlit" / "secrets.toml"
     if sec.exists():
         url = tomllib.loads(sec.read_text()).get("database", {}).get("url")
         if url:
             return url
-    data_dir = Path(os.environ.get("KEEPP_DATA_DIR", HERE / "data"))
+    data_dir = Path(os.environ.get("KEEPP_DATA_DIR", ROOT / "data"))
     data_dir.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{(data_dir / 'keepp.db').as_posix()}"
 
@@ -61,7 +63,7 @@ def main(argv):
             if not rows:
                 print("(no accounts yet)")
         elif len(argv) != 3:
-            sys.exit(f"Usage: python manage_users.py {cmd} <username>")
+            sys.exit(f"Usage: python scripts/manage_users.py {cmd} <username>")
         elif cmd == "add":
             store.create_user(argv[2], _new_password())
             print(f"Created {argv[2].strip().lower()!r}.")

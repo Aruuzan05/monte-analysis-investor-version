@@ -58,9 +58,14 @@ class RunRecord:
     p_loss_pct: float            # terminal P(loss), in percent
     elapsed_ms: float
     horizon_rows: list           # list[dict], HORIZON_COLS keys, one per horizon
+    # Which market assumptions: "jpm" (J.P. Morgan 2026 LTCMA) or a BlackRock
+    # id such as "blackrock-2026-08:Starting point". Defaults to J.P. Morgan so
+    # records made before BlackRock was added read back unchanged.
+    source: str = "jpm"
 
 
-def run_digest(mode: str, sleeves: Sequence[dict], paths, years, seed) -> str:
+def run_digest(mode: str, sleeves: Sequence[dict], paths, years, seed,
+               source: str = "jpm") -> str:
     """SHA-256 over everything that determines a run's numbers.
 
     Two runs with the same digest produce identical results, which is what
@@ -79,18 +84,38 @@ def run_digest(mode: str, sleeves: Sequence[dict], paths, years, seed) -> str:
         "sleeves": [[str(s["LTCMA line"]), _n(s["Weight %"]),
                      _n(s["Return %"]), _n(s["Vol %"])] for s in sleeves],
     }
+    # Only non-J.P. Morgan runs carry the source, so every digest saved before
+    # BlackRock was added still matches its own inputs.
+    if source and source != "jpm":
+        body["source"] = str(source)
     blob = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-def auto_label(seq: int, mode: str, years: int) -> str:
+def auto_label(seq: int, mode: str, years: int, source: str = "jpm") -> str:
     """The default label offered in the Saved runs panel."""
+    if source and source != "jpm":
+        scen = source_label(source).partition(" · ")[2]
+        src = f"BlackRock ({scen})" if scen else source_label(source)
+        return f"Run {seq} · {src} · {mode} · {years}y"
     return f"Run {seq} · {mode} · {years}y"
 
 
+def source_label(source: str) -> str:
+    """'J.P. Morgan' or 'BlackRock · <scenario>' for tables and exports."""
+    s = str(source or "jpm")
+    if s == "jpm":
+        return "J.P. Morgan"
+    if s.startswith("blackrock"):
+        scen = s.partition(":")[2]
+        scen = {"Starting point": "Base case"}.get(scen, scen)
+        return f"BlackRock · {scen}" if scen else "BlackRock"
+    return s
+
+
 def make_record(seq: int, label: str, mode: str, alloc: pd.DataFrame,
-                 paths, years, seed, result, created_at: Optional[str] = None
-                 ) -> RunRecord:
+                 paths, years, seed, result, created_at: Optional[str] = None,
+                 source: str = "jpm") -> RunRecord:
     """Build a RunRecord from an allocation table and an engine.Result.
 
     `alloc` is the app's sleeve DataFrame; `result` is the first element of
@@ -119,17 +144,20 @@ def make_record(seq: int, label: str, mode: str, alloc: pd.DataFrame,
         p_loss_pct=float(term["P(loss)"] * 100),
         elapsed_ms=float(result.elapsed_ms),
         horizon_rows=horizon_rows,
+        source=str(source or "jpm"),
     )
 
 
 def history_table(records: Sequence[RunRecord]) -> pd.DataFrame:
     """One row per saved run — what the Saved runs panel lists."""
-    cols = ["#", "Label", "Saved", "Mode", "Sleeves", "Paths", "Years",
+    cols = ["#", "Label", "Saved", "Assumptions", "Mode", "Sleeves", "Paths",
+            "Years",
             "Seed", "Return %", "Volatility %", "Median wealth", "P(loss) %"]
     if not records:
         return pd.DataFrame(columns=cols)
     return pd.DataFrame([{
-        "#": r.seq, "Label": r.label, "Saved": r.created_at, "Mode": r.mode,
+        "#": r.seq, "Label": r.label, "Saved": r.created_at,
+        "Assumptions": source_label(r.source), "Mode": r.mode,
         "Sleeves": len(r.sleeves), "Paths": r.paths, "Years": r.years,
         "Seed": r.seed, "Return %": r.exp_return_pct,
         "Volatility %": r.analytic_vol_pct, "Median wealth": r.median_wealth_x,

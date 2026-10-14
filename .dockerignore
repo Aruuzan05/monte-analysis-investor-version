@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 .streamlit/secrets.toml
 .streamlit/secrets.toml.example
-test_engine.py
+tests/
+docs/
+venv/
+.venv/
+data/
+archive-*/
 *.md
 .git/

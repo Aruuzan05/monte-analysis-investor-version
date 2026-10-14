@@ -2,7 +2,7 @@
 
 Run after any change to run_store.py:
 
-    python test_run_store.py
+    python tests/test_run_store.py
 
 Covers three things: a RunRecord is built correctly from an allocation table
 and an engine.Result, the session-history table lists saved runs faithfully,
@@ -14,8 +14,14 @@ from io import BytesIO
 import openpyxl
 import pandas as pd
 
-import run_store as rs
-from engine import simulate
+import sys
+from pathlib import Path
+
+# Run as a script (python tests/test_x.py): put the repo root on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from keepp_mc import run_store as rs
+from keepp_mc.engine import simulate
 
 ok = True
 

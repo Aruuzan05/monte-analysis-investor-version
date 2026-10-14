@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run without Docker. Usage: ./run_local.sh
+# Run without Docker. Usage: ./scripts/run_local.sh
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 python3 -m venv .venv 2>/dev/null || true
 source .venv/bin/activate
 # Aliyun mirror; drop the flag outside mainland China.

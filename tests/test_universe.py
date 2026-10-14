@@ -2,7 +2,7 @@
 
 Run after any change to universe.py, optimizer.py or the LTCMA data:
 
-    python test_universe.py
+    python tests/test_universe.py
 
 Covers four things: the 58-line universe frame carries the user's own numbers,
 the tangency portfolio refined on a precomputed frontier agrees with
@@ -12,9 +12,15 @@ and applying an optimum produces an allocation the app will actually accept.
 import numpy as np
 import pandas as pd
 
-import jpm_ltcma as J
-import optimizer as opt
-import universe as U
+import sys
+from pathlib import Path
+
+# Run as a script (python tests/test_x.py): put the repo root on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from keepp_mc import jpm_ltcma as J
+from keepp_mc import optimizer as opt
+from keepp_mc import universe as U
 
 ok = True
 

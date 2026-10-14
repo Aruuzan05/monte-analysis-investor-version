@@ -24,12 +24,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-import db as dbm
-import jpm_ltcma as jpm
-import optimizer as opt
-import run_store as rs
-import universe as uni
-from engine import simulate
+from keepp_mc import db as dbm
+from keepp_mc import blackrock_cma as brc
+from keepp_mc import jpm_ltcma as jpm
+from keepp_mc import optimizer as opt
+from keepp_mc import run_store as rs
+from keepp_mc import universe as uni
+from keepp_mc.engine import simulate
 
 # The line the cash floor applies to. Named once so the optimizer panel and the
 # risk-free default cannot drift apart from each other.
@@ -531,12 +532,12 @@ def plain_name(line_label: str):
     Equity" is a worse trade than plainer wording. The plain-English
     description below the name survives for the lines that have one.
     """
-    name = jpm.resolve(line_label)
-    cat = jpm.category_of(line_label)
-    cat_name = jpm.CATEGORY_NAME.get(cat, "") if cat else ""
+    name = SRC.resolve(line_label)
+    cat = SRC.category_of(line_label)
+    cat_name = SRC.CATEGORY_NAME.get(cat, "") if cat else ""
     desc = (FRIENDLY[name][1] if name in FRIENDLY
             else CATEGORY_PLAIN.get(cat_name, ""))
-    return (jpm.LABEL.get(name, name) if name else str(line_label), desc)
+    return (SRC.LABEL.get(name, name) if name else str(line_label), desc)
 
 
 def card(label, value, sub="", hot=False, dot=None, extra_cls="", style=""):
@@ -631,7 +632,7 @@ def std_numbers(line_name):
     treats this field as geometric and derives mu = g + sigma^2/2 itself.
     (Custom mode still seeds the deck's own figures; see custom_alloc_seed.)
     """
-    row = jpm.BY_NAME[line_name]
+    row = SRC.BY_NAME[line_name]
     return float(row[0]), float(row[2])
 
 
@@ -640,11 +641,11 @@ def std_alloc(lines, weights) -> pd.DataFrame:
     rows = []
     for key in CATEGORY_KEYS:
         for ln in lines:
-            if jpm.category_of(ln) != key:
+            if SRC.category_of(ln) != key:
                 continue
             r, v = std_numbers(ln)
-            rows.append({"Category": jpm.CATEGORY_NAME[key],
-                         "LTCMA line": jpm.LABEL[ln],
+            rows.append({"Category": SRC.CATEGORY_NAME[key],
+                         "LTCMA line": SRC.LABEL[ln],
                          "Weight %": float(weights.get(ln, 0.0)),
                          "Return %": r, "Vol %": v})
     return pd.DataFrame(rows, columns=["Category", "LTCMA line", "Weight %",
@@ -661,8 +662,14 @@ def seed_standard():
 
 
 def custom_alloc_seed() -> pd.DataFrame:
+    """Custom mode's starting table. On J.P. Morgan it is Keepp's own deck
+    sleeves; BlackRock starts empty (the deck's lines are J.P. Morgan's, and
+    BlackRock has no commodities line to map the 8% sleeve onto)."""
+    if getattr(SRC, "KEY", JPM_KEY) == BR_KEY:
+        return pd.DataFrame(columns=["Category", "LTCMA line", "Weight %",
+                                     "Return %", "Vol %"])
     return pd.DataFrame(
-        [{"Category": jpm.CATEGORY_NAME[k], "LTCMA line": jpm.LABEL[line],
+        [{"Category": SRC.CATEGORY_NAME[k], "LTCMA line": SRC.LABEL[line],
           "Weight %": w, "Return %": r, "Vol %": v}
          for k, line, w, r, v, _ in BASE_SLEEVES])
 
@@ -675,7 +682,7 @@ def sleeve_inputs(alloc: pd.DataFrame):
 
 def corr_of(alloc: pd.DataFrame):
     """Published correlation sub-matrix — shared by simulation and optimizer."""
-    return jpm.corr_for(list(alloc["LTCMA line"]))
+    return SRC.corr_for(list(alloc["LTCMA line"]))
 
 
 def bump_editors():
@@ -688,8 +695,71 @@ def bump_editors():
     st.session_state.editor_nonce = st.session_state.get("editor_nonce", 0) + 1
 
 
+# --------------------------------------------------------------------------
+# Market-assumptions source: J.P. Morgan 2026 LTCMA or BlackRock CMA.
+#
+# Each source keeps its OWN portfolio: the two catalogues have different
+# lines, and correlations only exist inside one provider's matrix, so a
+# portfolio is all-J.P. Morgan or all-BlackRock. Switching parks the current
+# source's holdings and brings back the other's (or starts it empty).
+# --------------------------------------------------------------------------
+JPM_KEY, BR_KEY = "jpm", brc.KEY
+PORTFOLIO_KEYS = ("std_lines", "std_w", "std_tick", "custom_alloc",
+                  "custom_bases")
+st.session_state.setdefault("cma_source", JPM_KEY)
+st.session_state.setdefault("br_scenario", brc.DEFAULT_SCENARIO)
+# A segmented control can be clicked off to "nothing selected"; keep the
+# source that was active instead of leaving the run without assumptions.
+if st.session_state.cma_source not in (JPM_KEY, BR_KEY):
+    st.session_state.cma_source = st.session_state.get("_active_src", JPM_KEY)
+if st.session_state.br_scenario not in brc.SCENARIOS:
+    st.session_state.br_scenario = brc.DEFAULT_SCENARIO
+st.session_state.setdefault("years", 10)
+st.session_state.setdefault("paths", 10_000)
+st.session_state.setdefault("sim_seed", 20260722)
+
+
+def source_for(key, scenario, years):
+    """The assumptions object for a source. J.P. Morgan is the jpm_ltcma
+    module itself; BlackRock is built per scenario and horizon (its returns
+    depend on the number of years)."""
+    if key == BR_KEY:
+        return brc.get(scenario, int(years))
+    return jpm
+
+
+def source_id_of(key, scenario):
+    """What a saved run records about its assumptions."""
+    return brc.source_id(scenario) if key == BR_KEY else JPM_KEY
+
+
+# A restore must switch source before the switch logic below runs.
+if "pending_restore" in st.session_state:
+    _sid = getattr(st.session_state.pending_restore.record, "source", JPM_KEY)
+    if str(_sid).startswith(BR_KEY):
+        st.session_state.cma_source = BR_KEY
+        st.session_state.br_scenario = brc.parse_source_id(_sid)
+    else:
+        st.session_state.cma_source = JPM_KEY
+
+_prev_src = st.session_state.get("_active_src")
+if _prev_src is not None and _prev_src != st.session_state.cma_source:
+    _stash = st.session_state.setdefault("_src_stash", {})
+    _stash[_prev_src] = {k: st.session_state[k] for k in PORTFOLIO_KEYS
+                         if k in st.session_state}
+    for _k in PORTFOLIO_KEYS:
+        st.session_state.pop(_k, None)
+    st.session_state.update(_stash.get(st.session_state.cma_source, {}))
+    st.session_state.pop("opt_result", None)
+    st.session_state.pop("_last_digest", None)
+    bump_editors()
+st.session_state._active_src = st.session_state.cma_source
+
+SRC = source_for(st.session_state.cma_source, st.session_state.br_scenario,
+                 st.session_state.years)
+
 if "custom_alloc" not in st.session_state:
-    st.session_state.editor_nonce = 0
+    st.session_state.setdefault("editor_nonce", 0)
     st.session_state.custom_alloc = custom_alloc_seed()
     # Standard mode: an ordered list of LTCMA lines, a weight for each, and a
     # tick saying whether the optimizer may use it. Anything above 0% is
@@ -697,13 +767,10 @@ if "custom_alloc" not in st.session_state:
     # without holding it today.
     (st.session_state.std_lines, st.session_state.std_w,
      st.session_state.std_tick) = seed_standard()
-    st.session_state.mode = MODE_BASE
+    st.session_state.setdefault("mode", MODE_BASE)
 
-# Simulation settings live in session state (not just widget defaults) so a
-# restored run can set them before the sidebar widgets are drawn.
-st.session_state.setdefault("years", 10)
-st.session_state.setdefault("paths", 10_000)
-st.session_state.setdefault("sim_seed", 20260722)
+# Simulation settings (years, paths, sim_seed) live in session state, set
+# above, so a restored run can change them before the sidebar is drawn.
 
 # A mode switch requested by "Apply as Custom sleeves" on the previous run. It
 # must land before the radio that owns the `mode` key is instantiated.
@@ -721,11 +788,13 @@ def apply_restore(stored):
     st.session_state.years = int(rec.years)
     st.session_state.paths = int(rec.paths)
     st.session_state.sim_seed = int(rec.seed)
+    rsrc = source_for(st.session_state.cma_source, st.session_state.br_scenario,
+                      rec.years)
     if is_std:
-        held = [jpm.resolve(s["LTCMA line"]) for s in rec.sleeves]
+        held = [rsrc.resolve(s["LTCMA line"]) for s in rec.sleeves]
         extra = [ln for ln in stored.pool if ln not in held]
         st.session_state.std_lines = held + extra
-        st.session_state.std_w = {jpm.resolve(s["LTCMA line"]): float(s["Weight %"])
+        st.session_state.std_w = {rsrc.resolve(s["LTCMA line"]): float(s["Weight %"])
                                   for s in rec.sleeves}
         st.session_state.std_w.update({ln: 0.0 for ln in extra})
         st.session_state.std_tick = {ln: True for ln in held + extra}
@@ -742,6 +811,49 @@ def apply_restore(stored):
 
 if "pending_restore" in st.session_state:
     apply_restore(st.session_state.pop("pending_restore"))
+    SRC = source_for(st.session_state.cma_source, st.session_state.br_scenario,
+                     st.session_state.years)
+
+IS_BR = st.session_state.cma_source == BR_KEY
+SRC_SHORT = brc.SHORT if IS_BR else "J.P. Morgan"
+SRC_NAME = (f"{brc.NAME} · {brc.SCENARIOS[st.session_state.br_scenario]}"
+            if IS_BR else "J.P. Morgan 2026 LTCMA")
+SRC_ID = source_id_of(st.session_state.cma_source, st.session_state.br_scenario)
+N_LINES = len(SRC.LINES)
+
+# What the Details tab's "Where the assumptions come from" shows on BlackRock.
+BR_SOURCES = [
+    ("Publisher", f"BlackRock · {brc.EDITION}",
+     f"BlackRock Capital Market Assumptions, {brc.EDITION} edition, data as of "
+     f"{brc.AS_OF}. US-dollar figures, gross of fees, for passive index "
+     f"exposure. {len(brc.NAMES)} asset classes; the Global 60/40 portfolio row "
+     f"is a portfolio, not an asset class, and is left out. BlackRock updates "
+     f"the workbook every quarter."),
+    ("Returns", "Geometric · by horizon",
+     "BlackRock publishes a compound (geometric) annual return for 5, 7, 10, "
+     "15, 20, 25 and 30 years. The app uses the column for the number of years "
+     "you chose, interpolating between the two nearest horizons (e.g. 12 years "
+     "sits 2/5 of the way from the 10- to the 15-year figure). Runs under 5 "
+     "years use the 5-year figure."),
+    ("Scenarios", "Base case + 2",
+     "Base case is BlackRock's 'Starting point' sheet. 'AI productivity boom' "
+     "and 'Global risk premia rise' are its two published scenarios; they "
+     "change expected returns only."),
+    ("Volatility", "As published",
+     "BlackRock's annual volatility per asset class. US cash is published at "
+     "0%; the optimizer floors it at a tiny positive value."),
+    ("Correlations", "BlackRock + J.P. Morgan",
+     "BlackRock publishes each asset's correlation to government bonds and to "
+     "equities only, not a full matrix. Those two numbers set the common part "
+     "of every pair exactly. What two factors cannot capture — how closely "
+     "related two members of one family are, such as levered and unlevered "
+     "direct lending — is taken from J.P. Morgan's published matrix, via the "
+     "closest J.P. Morgan line for each BlackRock asset. Method and mapping: "
+     "blackrock_cma.py."),
+    ("Categories", "3 groups",
+     "BlackRock's Fixed income, Equities and Private markets are shown as the "
+     "app's Fixed Income, Equities and Alternatives."),
+]
 
 NONCE = st.session_state.get("editor_nonce", 0)
 
@@ -780,16 +892,38 @@ with st.sidebar:
                       help="How long the money stays invested.")
 
     st.write("")
+    # Which provider's assumptions. Read at the top of the script (key
+    # "cma_source") so the whole run, and each source's own portfolio, follow it.
+    st.segmented_control(
+        "Assumptions from", [JPM_KEY, BR_KEY], key="cma_source",
+        selection_mode="single", required=True, width="stretch",
+        format_func=lambda k: ("J.P. Morgan" if k == JPM_KEY else "BlackRock"),
+        help="J.P. Morgan 2026 Long-Term Capital Market Assumptions (58 asset "
+             "classes, one long-term return each), or BlackRock's Capital "
+             "Market Assumptions, August 2026 (34 asset classes, returns by "
+             "horizon). Each keeps its own portfolio; switching back brings "
+             "yours back.")
+    with st.container():                   # BlackRock-only controls
+        if IS_BR:
+            st.selectbox(
+                "BlackRock scenario", list(brc.SCENARIOS), key="br_scenario",
+                format_func=lambda k: brc.SCENARIOS[k],
+                help="BlackRock's base case, or one of its two published "
+                     "scenarios. Scenarios change expected returns only; risk "
+                     "and correlations are the same in all three.")
+            st.caption(f"Using {SRC.HORIZON_NOTE}.")
+
+    st.write("")
     # Always visible — the manager's most-used switch, so it is not hidden in
     # the expander. The widget key stays "mode" so pending_mode still works.
     mode = st.radio(
         "Market assumptions", [MODE_BASE, MODE_CUSTOM], key="mode",
         format_func=lambda m: ("Standard" if m == MODE_BASE else "Custom"),
-        captions=["J.P. Morgan 2026 house view — only the mix can change",
+        captions=[f"{SRC_SHORT} figures as published — only the mix can change",
                   "Edit holdings, returns and risk figures"],
-        help="Standard keeps Keepp's signed-off assumptions. Custom lets you "
-             "add any of J.P. Morgan's 58 asset classes and type your own "
-             "return and risk numbers.")
+        help=f"Standard keeps {SRC_SHORT}'s published assumptions. Custom lets "
+             f"you add any of {SRC_SHORT}'s {N_LINES} asset classes and type "
+             f"your own return and risk numbers.")
 
     st.write("")
     with st.expander("Advanced settings"):
@@ -823,6 +957,9 @@ with st.sidebar:
 # Header + navigation
 # --------------------------------------------------------------------------
 chip = "" if is_base else '<span class="modechip">Custom assumptions</span>'
+if IS_BR:
+    chip += (f'<span class="modechip">BlackRock · '
+             f'{brc.SCENARIOS[st.session_state.br_scenario]}</span>')
 st.markdown('<div class="eyebrow">Keepp Capital · Portfolio outlook</div>',
             unsafe_allow_html=True)
 st.markdown(f"# How could your portfolio grow?{chip}", unsafe_allow_html=True)
@@ -848,10 +985,10 @@ with tab_mix:
             section("What's in your portfolio",
                     f"Open an asset class, pick an investment from its "
                     "dropdown, then set its share with the slider. All "
-                    f"{len(uni.INVESTABLE)} J.P. Morgan asset classes are "
+                    f"{N_LINES} {SRC_SHORT} asset classes are "
                     "available; "
-                    "their expected return and risk are fixed to the 2026 "
-                    "LTCMA and cannot be edited here. The <b>tick</b> says "
+                    f"their expected return and risk are fixed to {SRC_NAME} "
+                    "and cannot be edited here. The <b>tick</b> says "
                     "whether the optimizer on <i>Improve the mix</i> may use "
                     "that asset — anything above 0% is always in.")
 
@@ -870,19 +1007,19 @@ with tab_mix:
             # Colours are the donut's own: same order, so a holding is the
             # same colour in the list, in the donut and on the Overview.
             held_order = [ln for key in CATEGORY_KEYS for ln in lines
-                          if jpm.category_of(ln) == key and live[ln] > 0]
-            ROW_COLOR = color_map([plain_name(jpm.LABEL[ln])[0]
+                          if SRC.category_of(ln) == key and live[ln] > 0]
+            ROW_COLOR = color_map([plain_name(SRC.LABEL[ln])[0]
                                    for ln in held_order])
 
             new_w, new_t, remove, add_line = {}, {}, None, None
             for key in CATEGORY_KEYS:
-                cat = jpm.CATEGORY_NAME[key]
-                mine = [ln for ln in lines if jpm.category_of(ln) == key]
+                cat = SRC.CATEGORY_NAME[key]
+                mine = [ln for ln in lines if SRC.category_of(ln) == key]
                 held = [ln for ln in mine if live[ln] > 0]
                 c_sum = sum(live[ln] for ln in mine)
                 n_tick = sum(1 for ln in mine
                              if t_state.get(ln, False) or live[ln] > 0)
-                pool = len(jpm.CHOICES[key])
+                pool = len(SRC.CHOICES[key])
                 label = (
                     f"{CATEGORY_PLAIN.get(cat, cat)}  ·  nothing added  ·  "
                     f"{pool} to choose from" if not mine else
@@ -894,53 +1031,54 @@ with tab_mix:
                 # class the moment it was picked. Everything is open on a
                 # blank portfolio, where the pickers are the only thing to do.
                 with st.expander(label, expanded=bool(mine) or not lines):
-                    for ln in mine:
-                        nm, desc = plain_name(jpm.LABEL[ln])
-                        r, v = std_numbers(ln)
-                        w_now = live[ln]
-                        colr = ROW_COLOR.get(nm, OTHER_COLOR)
-                        t1, t2, t3 = st.columns(
-                            [1.85, 1.25, 0.26], vertical_alignment="center")
-                        with t1:
-                            # The asset's name IS the checkbox label: on a
-                            # phone the columns stack, and a bare tick box
-                            # above a separate name reads as unrelated.
-                            tick = st.checkbox(
-                                nm,
-                                value=bool(t_state.get(ln, False) or w_now > 0),
-                                disabled=w_now > 0, key=f"tk_{ln}_{NONCE}",
-                                help=("Held, so it is always offered to the "
-                                      "optimizer." if w_now > 0 else
-                                      "Tick to let the optimizer put money "
-                                      "into this, even though you hold none "
-                                      "today."))
-                            st.markdown(
-                                f'<div class="d2"><span class="sw" '
-                                f'style="background:{colr};margin:0 6px 0 0;'
-                                f'opacity:{1 if w_now > 0 else .35}"></span>'
-                                f'{desc + " · " if desc else ""}'
-                                f'Expected ~{r:.1f}% a year · swings '
-                                f'±{v:.1f}%</div>', unsafe_allow_html=True)
-                        val = t2.slider(
-                            nm, 0.0, 100.0, value=w_now, step=0.5,
-                            format="%.1f%%", key=f"sw_{ln}_{NONCE}",
-                            label_visibility="collapsed")
-                        if w_now <= 0 and t3.button(
-                                "✕", key=f"rm_{ln}_{NONCE}",
-                                help="Take this asset off the list"):
-                            remove = ln
-                        new_w[ln] = float(val)
-                        new_t[ln] = bool(tick) or float(val) > 0
+                    with st.container():           # rows: varying count
+                        for ln in mine:
+                            nm, desc = plain_name(SRC.LABEL[ln])
+                            r, v = std_numbers(ln)
+                            w_now = live[ln]
+                            colr = ROW_COLOR.get(nm, OTHER_COLOR)
+                            t1, t2, t3 = st.columns(
+                                [1.85, 1.25, 0.26], vertical_alignment="center")
+                            with t1:
+                                # The asset's name IS the checkbox label: on a
+                                # phone the columns stack, and a bare tick box
+                                # above a separate name reads as unrelated.
+                                tick = st.checkbox(
+                                    nm,
+                                    value=bool(t_state.get(ln, False) or w_now > 0),
+                                    disabled=w_now > 0, key=f"tk_{ln}_{NONCE}",
+                                    help=("Held, so it is always offered to the "
+                                          "optimizer." if w_now > 0 else
+                                          "Tick to let the optimizer put money "
+                                          "into this, even though you hold none "
+                                          "today."))
+                                st.markdown(
+                                    f'<div class="d2"><span class="sw" '
+                                    f'style="background:{colr};margin:0 6px 0 0;'
+                                    f'opacity:{1 if w_now > 0 else .35}"></span>'
+                                    f'{desc + " · " if desc else ""}'
+                                    f'Expected ~{r:.1f}% a year · swings '
+                                    f'±{v:.1f}%</div>', unsafe_allow_html=True)
+                            val = t2.slider(
+                                nm, 0.0, 100.0, value=w_now, step=0.5,
+                                format="%.1f%%", key=f"sw_{ln}_{NONCE}",
+                                label_visibility="collapsed")
+                            if w_now <= 0 and t3.button(
+                                    "✕", key=f"rm_{ln}_{NONCE}",
+                                    help="Take this asset off the list"):
+                                remove = ln
+                            new_w[ln] = float(val)
+                            new_t[ln] = bool(tick) or float(val) > 0
 
-                    rest = [jpm.LABEL[n] for n, *_ , c in jpm.LINES
+                    rest = [SRC.LABEL[n] for n, *_ , c in SRC.LINES
                             if c == key and n not in mine]
                     pick = st.selectbox(
                         f"Add from {cat}", ["— add an asset —"] + rest,
                         key=f"add_{key}_{NONCE}", label_visibility="collapsed",
-                        help=f"Any of the {pool} J.P. Morgan {cat} lines. It "
+                        help=f"Any of the {pool} {SRC_SHORT} {cat} lines. It "
                              f"arrives at 0%, already ticked for the optimizer.")
                     if pick != "— add an asset —":
-                        add_line = jpm.resolve(pick)
+                        add_line = SRC.resolve(pick)
 
             st.session_state.std_w = new_w
             st.session_state.std_tick = new_t
@@ -966,9 +1104,9 @@ with tab_mix:
                 st.caption(
                     f"Ticked assets are the pool the optimizer re-weights on "
                     f"**Improve the mix**. Untick or press **✕** on a 0% asset "
-                    f"to drop it. All {len(uni.INVESTABLE)} J.P. Morgan lines "
+                    f"to drop it. All {N_LINES} {SRC_SHORT} lines "
                     f"are available from the dropdowns, each on its published "
-                    f"2026 LTCMA return and volatility.")
+                    f"return and volatility.")
 
             # Everything the portfolio could hold — the optimizer's pool.
             POOL_LINES = [ln for ln in st.session_state.std_lines
@@ -990,9 +1128,10 @@ with tab_mix:
         else:
             section("What's in your portfolio",
                     "One table per asset class. Pick an investment from the list "
-                    "and it fills in J.P. Morgan's figures — type over them to use "
+                    f"and it fills in {SRC_SHORT}'s figures — type over them to use "
                     "your own. **+** adds a row; select a row and press Delete to "
-                    "remove it. ★ marks an expansion-proposal line.")
+                    "remove it."
+                    + ("" if IS_BR else " ★ marks an expansion-proposal line."))
             store = st.session_state.custom_alloc
             # Each editor must be handed the SAME frame on every run until the
             # next bump. With num_rows="dynamic", Streamlit hashes the data
@@ -1006,7 +1145,7 @@ with tab_mix:
             parts, dirty_any = [], False
 
             for key in CATEGORY_KEYS:
-                cat = jpm.CATEGORY_NAME[key]
+                cat = SRC.CATEGORY_NAME[key]
                 wkey = f"grp_{key}_{NONCE}"
                 if wkey not in st.session_state or key not in bases:
                     bases[key] = (store[store["Category"] == cat]
@@ -1026,9 +1165,9 @@ with tab_mix:
                     width='stretch', num_rows="dynamic",
                     column_config={
                         "LTCMA line": st.column_config.SelectboxColumn(
-                            "Investment", options=jpm.CHOICES[key],
+                            "Investment", options=SRC.CHOICES[key],
                             width="medium", required=True,
-                            help=f"J.P. Morgan 2026 LTCMA lines in {cat}. "
+                            help=f"{SRC_NAME} lines in {cat}. "
                                  f"Type to filter."),
                         # step MUST stay 0.01 — a coarser step snaps the
                         # displayed value.
@@ -1046,7 +1185,7 @@ with tab_mix:
                                  "moves up or down in a year."),
                     },
                 )
-                synced, d = jpm.sync_group(g_prev, edited, key)
+                synced, d = SRC.sync_group(g_prev, edited, key)
                 # A deleted row shifts the rows below it, and sync_group's
                 # line-change check is positional against the base — rebase.
                 dirty_any = dirty_any or d or len(synced) < len(g_prev)
@@ -1062,7 +1201,8 @@ with tab_mix:
                 st.rerun()
 
             st.write("")
-            if st.button("↺ Reset to J.P. Morgan defaults"):
+            if st.button("↺ Clear all assets" if IS_BR
+                         else "↺ Reset to J.P. Morgan defaults"):
                 st.session_state.custom_alloc = custom_alloc_seed()
                 bump_editors()
                 st.rerun()
@@ -1084,48 +1224,55 @@ with tab_mix:
 
     with mix_right:
         section("At a glance")
-        if empty:
-            st.markdown(
-                '<div class="total"><div><b>Nothing added yet</b></div>'
-                '<div>0 holdings</div></div>', unsafe_allow_html=True)
-            st.caption("Pick assets on the left and they appear here, with "
-                       "their share of the portfolio.")
-        elif off:
-            gap = 100.0 - wsum
-            msg = (f"{abs(gap):.1f}% still to place" if gap > 0
-                   else f"{abs(gap):.1f}% too much")
-            fill = min(wsum, 100.0)
-            st.markdown(
-                f'<div class="total bad"><div><b>Total {wsum:.1f}%</b></div>'
-                f'<div>{msg}</div></div>'
-                f'<div class="bar"><div style="width:{fill}%;background:{BRICK}"></div></div>',
-                unsafe_allow_html=True)
-            st.write("")
-            if st.button("Scale everything to 100%", type="primary", width='stretch'):
-                if wsum > 0:
-                    if is_base:
-                        st.session_state.std_w = {
-                            ln: round(w / wsum * 100, 4)
-                            for ln, w in st.session_state.std_w.items()}
+        # One fixed slot for the status box. It is one element at 100% but
+        # up to four when the total is off (box, spacer, Scale button,
+        # warning); left loose, that moved the donut below to a new position
+        # on every change, and the old donut lingered underneath the new one
+        # until the run finished. Same rule wherever a block varies in size.
+        with st.container():
+            if empty:
+                st.markdown(
+                    '<div class="total"><div><b>Nothing added yet</b></div>'
+                    '<div>0 holdings</div></div>', unsafe_allow_html=True)
+                st.caption("Pick assets on the left and they appear here, with "
+                           "their share of the portfolio.")
+            elif off:
+                gap = 100.0 - wsum
+                msg = (f"{abs(gap):.1f}% still to place" if gap > 0
+                       else f"{abs(gap):.1f}% too much")
+                fill = min(wsum, 100.0)
+                st.markdown(
+                    f'<div class="total bad"><div><b>Total {wsum:.1f}%</b></div>'
+                    f'<div>{msg}</div></div>'
+                    f'<div class="bar"><div style="width:{fill}%;background:{BRICK}"></div></div>',
+                    unsafe_allow_html=True)
+                st.write("")
+                if st.button("Scale everything to 100%", type="primary", width='stretch'):
+                    if wsum > 0:
+                        if is_base:
+                            st.session_state.std_w = {
+                                ln: round(w / wsum * 100, 4)
+                                for ln, w in st.session_state.std_w.items()}
+                        else:
+                            st.session_state.custom_alloc["Weight %"] = (
+                                pd.to_numeric(st.session_state.custom_alloc["Weight %"],
+                                              errors="coerce").fillna(0) / wsum * 100
+                            ).round(4)
+                        bump_editors()
+                        st.rerun()
                     else:
-                        st.session_state.custom_alloc["Weight %"] = (
-                            pd.to_numeric(st.session_state.custom_alloc["Weight %"],
-                                          errors="coerce").fillna(0) / wsum * 100
-                        ).round(4)
-                    bump_editors()
-                    st.rerun()
-                else:
-                    st.warning("Give at least one holding a share above zero.")
-        else:
-            st.markdown(
-                '<div class="total ok"><div><b>Total 100%</b></div>'
-                '<div>✓ Ready</div></div>', unsafe_allow_html=True)
+                        st.warning("Give at least one holding a share above zero.")
+            else:
+                st.markdown(
+                    '<div class="total ok"><div><b>Total 100%</b></div>'
+                    '<div>✓ Ready</div></div>', unsafe_allow_html=True)
 
         hdf = holdings_frame(ALLOC_NAMES, list(alloc["Weight %"]), CMAP)
         ch = donut(hdf, f"{len(hdf)}", "holdings", size=230)
-        if ch is not None:
-            st.altair_chart(ch, width='content')
-            st.markdown(legend_html(hdf), unsafe_allow_html=True)
+        with st.container():
+            if ch is not None:
+                st.altair_chart(ch, width='content')
+                st.markdown(legend_html(hdf), unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
 # Saved runs panel — every run is stored in the database automatically.
@@ -1139,11 +1286,25 @@ def _rename_run(run_id, key):
 
 
 def saved_runs_panel(current_digest=None):
+    # One slot: the panel's length varies (empty list, Undo row, compare
+    # chart), and it sits above other content on the Details tab.
+    with st.container():
+        _saved_runs_body(current_digest)
+
+
+def _saved_runs_body(current_digest):
     section("Saved scenarios",
             "Every run is saved to your account automatically, so it is still "
             "here after a refresh or on another device. Select rows in the "
             "table to restore, rename, compare or delete them.")
-    stored = list(reversed(DB.list_runs(UID)))          # newest first
+    try:
+        stored = list(reversed(DB.list_runs(UID)))      # newest first
+    except Exception as e:                # database blip: keep the results page up
+        st.warning("Saved scenarios could not be loaded just now: the database "
+                   "did not respond. Nothing is lost; refresh the page in a "
+                   "moment.", icon=":material/cloud_off:")
+        st.caption(f"{type(e).__name__}: {str(e).splitlines()[0][:300]}")
+        return
     saved = [x.record for x in stored]
     # The key changes whenever a run is added or removed, which clears the
     # selection: a new run lands at the top and would otherwise shift every
@@ -1189,20 +1350,21 @@ def saved_runs_panel(current_digest=None):
         _reset_selection()
         st.rerun()
 
-    undo = st.session_state.get("_undo_ids")
-    if undo:
-        u1, _, u2 = st.columns([2.4, 1, 1], vertical_alignment="center")
-        u1.markdown(f'<div class="muted">Deleted {len(undo)} run'
-                    f'{"s" if len(undo) != 1 else ""}.</div>',
-                    unsafe_allow_html=True)
-        if u2.button("Undo", width='stretch', icon=":material/undo:"):
-            n = DB.undelete_runs(UID, undo)
-            st.session_state._undo_ids = None
-            if n < len(undo):
-                st.toast("Runs that were re-run after deleting are already "
-                         "back in the list.")
-            _reset_selection()
-            st.rerun()
+    with st.container():                   # Undo row: only after a delete
+        undo = st.session_state.get("_undo_ids")
+        if undo:
+            u1, _, u2 = st.columns([2.4, 1, 1], vertical_alignment="center")
+            u1.markdown(f'<div class="muted">Deleted {len(undo)} run'
+                        f'{"s" if len(undo) != 1 else ""}.</div>',
+                        unsafe_allow_html=True)
+            if u2.button("Undo", width='stretch', icon=":material/undo:"):
+                n = DB.undelete_runs(UID, undo)
+                st.session_state._undo_ids = None
+                if n < len(undo):
+                    st.toast("Runs that were re-run after deleting are already "
+                             "back in the list.")
+                _reset_selection()
+                st.rerun()
 
     if current_digest is not None:
         cur = next((x for x in stored if x.digest == current_digest), None)
@@ -1218,39 +1380,40 @@ def saved_runs_panel(current_digest=None):
                    "adds up to 100%.")
         return
 
-    # Compare: the selected runs, or the most recent eight.
-    chart_runs = picked if len(picked) >= 2 else stored[:8]
-    if len(chart_runs) >= 2:
-        cmp = pd.DataFrame([{
-            "run": f"{x.record.seq}. {x.record.label}",
-            "val": x.record.median_wealth_x * amount,
-            "val_l": money(x.record.median_wealth_x * amount),
-            "loss": f"{x.record.p_loss_pct:.1f}%",
-            "yrs": f"{x.record.years} yrs",
-            "vol": f"±{x.record.analytic_vol_pct:.1f}%"} for x in chart_runs])
-        bars = alt.Chart(cmp).mark_bar(color=ACCENT, cornerRadiusEnd=4,
-                                       height=18).encode(
-            x=alt.X("val:Q", title=None, axis=alt.Axis(
-                format="$.3~s", labelColor=INK_3, gridColor=GRID,
-                domain=False, ticks=False)),
-            y=alt.Y("run:N", sort=list(cmp["run"]), title=None,
-                    axis=alt.Axis(labelFontSize=12, labelColor=INK,
-                                  domain=False, ticks=False, labelLimit=260)),
-            tooltip=[alt.Tooltip("run:N", title="Scenario"),
-                     alt.Tooltip("val_l:N", title="Typical value"),
-                     alt.Tooltip("yrs:N", title="Horizon"),
-                     alt.Tooltip("vol:N", title="Yearly swings"),
-                     alt.Tooltip("loss:N", title="Chance of loss")])
-        txt = alt.Chart(cmp).mark_text(align="left", dx=6, fontSize=12,
-                                       fontWeight=600, color=INK_2).encode(
-            x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
-        which = ("the selected scenarios" if len(picked) >= 2 else
-                 "the most recent scenarios — select rows to compare others")
-        st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
-                    f'the end of {which}</div>', unsafe_allow_html=True)
-        st.altair_chart((bars + txt).properties(
-            height=max(36 * len(cmp), 90)).configure_view(strokeWidth=0),
-            width='stretch')
+    with st.container():                   # compare chart: 2+ runs only
+        # Compare: the selected runs, or the most recent eight.
+        chart_runs = picked if len(picked) >= 2 else stored[:8]
+        if len(chart_runs) >= 2:
+            cmp = pd.DataFrame([{
+                "run": f"{x.record.seq}. {x.record.label}",
+                "val": x.record.median_wealth_x * amount,
+                "val_l": money(x.record.median_wealth_x * amount),
+                "loss": f"{x.record.p_loss_pct:.1f}%",
+                "yrs": f"{x.record.years} yrs",
+                "vol": f"±{x.record.analytic_vol_pct:.1f}%"} for x in chart_runs])
+            bars = alt.Chart(cmp).mark_bar(color=ACCENT, cornerRadiusEnd=4,
+                                           height=18).encode(
+                x=alt.X("val:Q", title=None, axis=alt.Axis(
+                    format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                    domain=False, ticks=False)),
+                y=alt.Y("run:N", sort=list(cmp["run"]), title=None,
+                        axis=alt.Axis(labelFontSize=12, labelColor=INK,
+                                      domain=False, ticks=False, labelLimit=260)),
+                tooltip=[alt.Tooltip("run:N", title="Scenario"),
+                         alt.Tooltip("val_l:N", title="Typical value"),
+                         alt.Tooltip("yrs:N", title="Horizon"),
+                         alt.Tooltip("vol:N", title="Yearly swings"),
+                         alt.Tooltip("loss:N", title="Chance of loss")])
+            txt = alt.Chart(cmp).mark_text(align="left", dx=6, fontSize=12,
+                                           fontWeight=600, color=INK_2).encode(
+                x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
+            which = ("the selected scenarios" if len(picked) >= 2 else
+                     "the most recent scenarios — select rows to compare others")
+            st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
+                        f'the end of {which}</div>', unsafe_allow_html=True)
+            st.altair_chart((bars + txt).properties(
+                height=max(36 * len(cmp), 90)).configure_view(strokeWidth=0),
+                width='stretch')
 
     hist_df = rs.history_table(saved)
     hist_df.insert(0, "On screen", ["●" if x.digest == current_digest else ""
@@ -1320,11 +1483,11 @@ with st.spinner("Simulating markets…"):
 # deleted from popping straight back in.
 RUN_MODE = "Base" if is_base else "Custom"
 RUN_DIGEST = rs.run_digest(RUN_MODE, alloc[rs.ALLOC_COLS].to_dict("records"),
-                           paths, years, seed)
+                           paths, years, seed, source=SRC_ID)
 if st.session_state.get("_last_digest") != RUN_DIGEST:
     try:
         DB.save_run(UID, rs.make_record(0, "", RUN_MODE, alloc, paths, years,
-                                        seed, res),
+                                        seed, res, source=SRC_ID),
                     RUN_DIGEST, pool=POOL_LINES if is_base else [])
         st.session_state._last_digest = RUN_DIGEST
     except Exception as e:                # never lose the results over a save
@@ -1399,10 +1562,11 @@ def fan_chart(res, amount, height=380):
 # TAB — Overview
 # ==========================================================================
 with tab_over:
-    if repaired:
-        st.warning("The correlation sub-matrix needed a numerical repair before "
-                   "simulating. This should not happen with the published J.P. "
-                   "Morgan matrix — worth reporting if you see it.")
+    with st.container():
+        if repaired:
+            st.warning("The correlation sub-matrix needed a numerical repair before "
+                       "simulating. This should not happen with the published J.P. "
+                       "Morgan matrix — worth reporting if you see it.")
 
     gain = MED_X * amount - amount
     st.markdown(
@@ -1510,7 +1674,9 @@ OBJ_PLAIN = {
 }
 
 SCOPE_SLEEVES = "The sleeves above"
-SCOPE_UNIVERSE = f"All {len(uni.INVESTABLE)} LTCMA lines"
+# A radio option VALUE: kept constant across sources (the count is shown by
+# the format_func), so switching source never invalidates the stored choice.
+SCOPE_UNIVERSE = "All lines"
 
 
 def range_strip(span, chosen, metric, current_pp):
@@ -1596,27 +1762,27 @@ with tab_opt:
         format_func=lambda s_: (
             ("My ticked assets" if is_base else "Only my current holdings")
             if s_ == SCOPE_SLEEVES
-            else f"All {len(uni.INVESTABLE)} asset classes"),
+            else f"All {N_LINES} asset classes"),
         captions=[(f"The {len(pool_alloc)} assets ticked on Your mix"
                    if is_base else "Re-weight what the portfolio already holds"),
-                  "Build the best mix from J.P. Morgan's full catalogue"],
-        help=f"All {len(uni.INVESTABLE)} asset classes: every J.P. Morgan 2026 "
-             f"LTCMA line is a candidate. Lines you already hold keep your own "
-             f"return and risk figures; the rest use J.P. Morgan's. Takes about "
+                  f"Build the best mix from {SRC_SHORT}'s full catalogue"],
+        help=f"All {N_LINES} asset classes: every {SRC_NAME} "
+             f"line is a candidate. Lines you already hold keep your own "
+             f"return and risk figures; the rest use {SRC_SHORT}'s. Takes about "
              f"1–2 seconds.")
     is_universe = scope == SCOPE_UNIVERSE
 
     # The ticked pool, not just what is held: a 0% ticked asset is exactly a
     # candidate the optimizer may move into.
-    opt_alloc = uni.universe_alloc(alloc) if is_universe else pool_alloc
-    opt_lines = [jpm.resolve(x) for x in opt_alloc["LTCMA line"]]
+    opt_alloc = uni.universe_alloc(alloc, src=SRC) if is_universe else pool_alloc
+    opt_lines = [SRC.resolve(x) for x in opt_alloc["LTCMA line"]]
     opt_cats = list(opt_alloc["Category"])
     n_lines = len(opt_lines)
     cash_pos = [i for i, nm in enumerate(opt_lines) if nm == CASH_LINE]
 
     opt_mu, opt_vols = opt.inputs_from_percent(opt_alloc["Return %"],
                                                opt_alloc["Vol %"])
-    opt_cov = opt.covariance(opt_vols, jpm.corr_for(opt_alloc["LTCMA line"]))
+    opt_cov = opt.covariance(opt_vols, SRC.corr_for(opt_alloc["LTCMA line"]))
     cur_w = np.asarray(opt_alloc["Weight %"], dtype=float) / 100.0
 
     groups = {}
@@ -1686,7 +1852,7 @@ with tab_opt:
                 help=("Re-solves 40 times with every expected return nudged by "
                       "random noise and reports how far each weight moves."
                       if not is_universe else
-                      "Not available across all 58 lines — it would take minutes."))
+                      f"Not available across all {N_LINES} lines — it would take minutes."))
             show_stability = show_stability and not is_universe
 
         lower = np.zeros(n_lines)
@@ -1769,64 +1935,67 @@ with tab_opt:
 
         run_opt = st.button("Suggest a mix", type="primary", icon=":material/auto_awesome:")
 
-        if run_opt:
-            # Across the catalogue the frontier is NOT solved up front: at
-            # n=58 it is 24 QPs at ~0.6s each, and only the optional map in an
-            # expander needs it. Best balance uses the one-QP tangency
-            # (universe.max_sharpe_qp) instead — measured 1.4s vs 19s, and at
-            # least as high a Sharpe (test_universe.py). Over the sleeves every
-            # QP is ~1ms, so that path is unchanged.
-            import time as _time
-            _t0 = _time.perf_counter()
-            spinner_msg = (f"Searching all {n_lines} asset classes…"
-                           if is_universe else "Searching for the best mix…")
-            try:
-                with st.spinner(spinner_msg):
-                    w0 = opt.feasible_start(limits)          # raises Infeasible
-                    frontier = (None if is_universe else
-                                opt.efficient_frontier(opt_mu, opt_cov, limits,
-                                                       w0, 60))
-                    rf = rf_pct / 100.0
-                    if objective == OBJ_SHARPE:
-                        if is_universe:
-                            w_opt, _ = uni.max_sharpe_qp(opt_mu, opt_cov,
-                                                         limits, rf)
+        # The spinner and any error only exist on the run the button was
+        # pressed; in their own slot they do not shift the results below.
+        with st.container():
+            if run_opt:
+                # Across the catalogue the frontier is NOT solved up front: at
+                # n=58 it is 24 QPs at ~0.6s each, and only the optional map in an
+                # expander needs it. Best balance uses the one-QP tangency
+                # (universe.max_sharpe_qp) instead — measured 1.4s vs 19s, and at
+                # least as high a Sharpe (test_universe.py). Over the sleeves every
+                # QP is ~1ms, so that path is unchanged.
+                import time as _time
+                _t0 = _time.perf_counter()
+                spinner_msg = (f"Searching all {n_lines} asset classes…"
+                               if is_universe else "Searching for the best mix…")
+                try:
+                    with st.spinner(spinner_msg):
+                        w0 = opt.feasible_start(limits)          # raises Infeasible
+                        frontier = (None if is_universe else
+                                    opt.efficient_frontier(opt_mu, opt_cov, limits,
+                                                           w0, 60))
+                        rf = rf_pct / 100.0
+                        if objective == OBJ_SHARPE:
+                            if is_universe:
+                                w_opt, _ = uni.max_sharpe_qp(opt_mu, opt_cov,
+                                                             limits, rf)
+                            else:
+                                w_opt, _, _, _ = opt.max_sharpe(
+                                    opt_mu, opt_cov, limits, w0, rf)
+                            note = None
+                        elif objective == OBJ_GROWTH:
+                            r_ = opt.max_growth(opt_mu, opt_cov, limits, w0)
+                            w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                        elif objective == OBJ_MINVOL:
+                            r_ = opt.min_variance(opt_mu, opt_cov, limits, w0,
+                                                  target_return=target_pct / 100.0)
+                            w_opt, note = r_.x, (None if r_.success else str(r_.message))
                         else:
-                            w_opt, _, _, _ = opt.max_sharpe(
-                                opt_mu, opt_cov, limits, w0, rf)
-                        note = None
-                    elif objective == OBJ_GROWTH:
-                        r_ = opt.max_growth(opt_mu, opt_cov, limits, w0)
-                        w_opt, note = r_.x, (None if r_.success else str(r_.message))
-                    elif objective == OBJ_MINVOL:
-                        r_ = opt.min_variance(opt_mu, opt_cov, limits, w0,
-                                              target_return=target_pct / 100.0)
-                        w_opt, note = r_.x, (None if r_.success else str(r_.message))
-                    else:
-                        r_ = opt.max_return(opt_mu, opt_cov, limits, w0,
-                                            vol_budget=budget_pct / 100.0)
-                        w_opt, note = r_.x, (None if r_.success else str(r_.message))
-                    w_opt = np.clip(np.asarray(w_opt, dtype=float),
-                                    limits.lower, limits.upper)
-                    w_opt = w_opt / w_opt.sum()
-                    band = opt.stability(opt_mu, opt_cov, limits, rf) \
-                        if show_stability else (None, None)
-                st.session_state.opt_result = {
-                    "lines": opt_lines, "cats": opt_cats, "w": w_opt,
-                    "frontier": frontier, "rf": rf, "objective": objective,
-                    "note": note, "stability": band,
-                    "cur_w": cur_w.copy(), "mode": mode,
-                    "universe": is_universe, "alloc": opt_alloc.copy(),
-                    "target_pct": target_pct, "budget_pct": budget_pct,
-                    "limits": limits, "seconds": _time.perf_counter() - _t0,
-                }
-            except opt.Infeasible as e:
-                st.session_state.pop("opt_result", None)
-                st.error(f"**These limits cannot all be met.** {e}")
-            except Exception as e:
-                st.session_state.pop("opt_result", None)
-                st.error(f"**The model could not find a solution.** "
-                         f"{type(e).__name__}: {e}")
+                            r_ = opt.max_return(opt_mu, opt_cov, limits, w0,
+                                                vol_budget=budget_pct / 100.0)
+                            w_opt, note = r_.x, (None if r_.success else str(r_.message))
+                        w_opt = np.clip(np.asarray(w_opt, dtype=float),
+                                        limits.lower, limits.upper)
+                        w_opt = w_opt / w_opt.sum()
+                        band = opt.stability(opt_mu, opt_cov, limits, rf) \
+                            if show_stability else (None, None)
+                    st.session_state.opt_result = {
+                        "lines": opt_lines, "cats": opt_cats, "w": w_opt,
+                        "frontier": frontier, "rf": rf, "objective": objective,
+                        "note": note, "stability": band,
+                        "cur_w": cur_w.copy(), "mode": mode,
+                        "universe": is_universe, "alloc": opt_alloc.copy(),
+                        "target_pct": target_pct, "budget_pct": budget_pct,
+                        "limits": limits, "seconds": _time.perf_counter() - _t0,
+                    }
+                except opt.Infeasible as e:
+                    st.session_state.pop("opt_result", None)
+                    st.error(f"**These limits cannot all be met.** {e}")
+                except Exception as e:
+                    st.session_state.pop("opt_result", None)
+                    st.error(f"**The model could not find a solution.** "
+                             f"{type(e).__name__}: {e}")
 
         # ------------------------------------------------------------------
         # Results
@@ -1835,9 +2004,10 @@ with tab_opt:
         if R and R["lines"] == opt_lines:
             w_opt = R["w"]
             rf = R["rf"]
-            if R.get("note"):
-                st.warning(f"The search did not fully settle — this is the best "
-                           f"mix it reached, not a proven optimum. ({R['note']})")
+            with st.container():
+                if R.get("note"):
+                    st.warning(f"The search did not fully settle — this is the best "
+                               f"mix it reached, not a proven optimum. ({R['note']})")
 
             r_opt, v_opt = opt.portfolio(w_opt, opt_mu, opt_cov)
             r_cur, v_cur = opt.portfolio(cur_w, opt_mu, opt_cov)
@@ -1972,29 +2142,30 @@ with tab_opt:
                 st.markdown(legend_html(leg, descs), unsafe_allow_html=True)
 
             # ---- by asset class (full catalogue only) ---------------------
-            if R.get("universe"):
-                used = int((w_opt >= uni.DUST_PCT / 100).sum())
-                section("By asset class",
-                        f"The suggestion uses <b>{used} of {n_lines}</b> asset "
-                        f"classes (holdings under {uni.DUST_PCT:.2f}% are left "
-                        f"out).")
-                cat_df = uni.category_table(opt_cats, cur_w, w_opt)
-                ccols = st.columns(len(cat_df))
-                for col, (_, row) in zip(ccols, cat_df.iterrows()):
-                    d = row["Change (pp)"]
-                    col.markdown(card(
-                        CATEGORY_PLAIN.get(row["Category"], row["Category"]),
-                        f'<span class="was">{row["Current %"]:.0f}%</span>'
-                        f'<span class="arrow">→</span>{row["Optimal %"]:.0f}%',
-                        f'{d:+.1f} pts'.replace("-", "−")),
-                        unsafe_allow_html=True)
+            with st.container():                # full catalogue only
+                if R.get("universe"):
+                    used = int((w_opt >= uni.DUST_PCT / 100).sum())
+                    section("By asset class",
+                            f"The suggestion uses <b>{used} of {n_lines}</b> asset "
+                            f"classes (holdings under {uni.DUST_PCT:.2f}% are left "
+                            f"out).")
+                    cat_df = uni.category_table(opt_cats, cur_w, w_opt)
+                    ccols = st.columns(len(cat_df))
+                    for col, (_, row) in zip(ccols, cat_df.iterrows()):
+                        d = row["Change (pp)"]
+                        col.markdown(card(
+                            CATEGORY_PLAIN.get(row["Category"], row["Category"]),
+                            f'<span class="was">{row["Current %"]:.0f}%</span>'
+                            f'<span class="arrow">→</span>{row["Optimal %"]:.0f}%',
+                            f'{d:+.1f} pts'.replace("-", "−")),
+                            unsafe_allow_html=True)
 
             # ---- what changes ---------------------------------------------
             section("What would change",
                     "Percentage points of the portfolio moved into (blue) or out of "
                     "(orange) each holding.")
             if R.get("universe"):
-                chg_names = [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]
+                chg_names = [plain_name(SRC.LABEL.get(x, x))[0] for x in opt_lines]
                 chg = change_chart(chg_names, cur_w, w_opt)
             else:
                 chg = change_chart(POOL_NAMES, cur_w, w_opt)
@@ -2085,7 +2256,7 @@ with tab_opt:
                          "sharpe": sh_opt}])
                     assets = pd.DataFrame({
                         "vol": opt_vols * 100, "ret": opt_mu * 100,
-                        "what": [plain_name(jpm.LABEL.get(x, x))[0] for x in opt_lines]})
+                        "what": [plain_name(SRC.LABEL.get(x, x))[0] for x in opt_lines]})
 
                     def _axis(title):
                         return alt.Axis(title=title, labelColor=INK_3, titleColor=INK_3,
@@ -2178,8 +2349,8 @@ with tab_opt:
                 else:
                     rows = []
                     for i, nm in enumerate(opt_lines):
-                        row = {"Holding": plain_name(jpm.LABEL.get(nm, nm))[0],
-                               "LTCMA line": jpm.LABEL.get(nm, nm),
+                        row = {"Holding": plain_name(SRC.LABEL.get(nm, nm))[0],
+                               "LTCMA line": SRC.LABEL.get(nm, nm),
                                "Current %": cur_w[i] * 100,
                                "Optimal %": w_opt[i] * 100,
                                "Change (pp)": (w_opt[i] - cur_w[i]) * 100}
@@ -2190,14 +2361,14 @@ with tab_opt:
                     st.dataframe(pd.DataFrame(rows), hide_index=True,
                                  width='stretch',
                                  column_config={"LTCMA line": st.column_config
-                                                .TextColumn("J.P. Morgan line"),
+                                                .TextColumn(f"{SRC_SHORT} line"),
                                                 **pct_cfg})
                 if p25 is not None:
                     widest = int(np.argmax(p75 - p25))
                     st.caption(
                         f"**Stability:** across 40 re-solves with each expected "
                         f"return nudged by 0.5%, the least stable holding is "
-                        f"**{plain_name(jpm.LABEL.get(opt_lines[widest], opt_lines[widest]))[0]}**"
+                        f"**{plain_name(SRC.LABEL.get(opt_lines[widest], opt_lines[widest]))[0]}**"
                         f", whose suggested share ranges "
                         f"{p25[widest]*100:.0f}–{p75[widest]*100:.0f}%. A wide range "
                         f"means the suggestion for that holding is not reliable.")
@@ -2298,8 +2469,8 @@ with tab_det:
 
     # ---- sources ---------------------------------------------------------
     section("Where the assumptions come from")
-    with st.expander("J.P. Morgan 2026 LTCMA · sources and method"):
-        for name, mini, text in SOURCES:
+    with st.expander(f"{SRC_NAME} · sources and method"):
+        for name, mini, text in (BR_SOURCES if IS_BR else SOURCES):
             a, b = st.columns([1, 3])
             a.markdown(f'<div class="srcname">{name}</div>'
                        f'<div class="srcmini">{mini}</div>', unsafe_allow_html=True)

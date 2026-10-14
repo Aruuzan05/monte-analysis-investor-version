@@ -2,7 +2,7 @@
 
 Run after any change to db.py or run_store.py:
 
-    python test_db.py
+    python tests/test_db.py
 
 Uses an in-memory SQLite database, so it needs no server and leaves nothing
 behind. The same code runs against Postgres in production; set
@@ -15,9 +15,15 @@ import time
 
 import pandas as pd
 
-import db as dbm
-import run_store as rs
-from engine import simulate
+import sys
+from pathlib import Path
+
+# Run as a script (python tests/test_x.py): put the repo root on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from keepp_mc import db as dbm
+from keepp_mc import run_store as rs
+from keepp_mc.engine import simulate
 
 ok = True
 
@@ -212,6 +218,31 @@ with tempfile.TemporaryDirectory() as tmp:
     check("session still valid after restart", b.user_for_token(tk) == (uid, "carol"))
     check("runs still there after restart", len(b.list_runs(uid)) == 1)
     b.engine.dispose()
+
+print()
+print("=" * 78)
+print("7. ASSUMPTIONS SOURCE — BlackRock runs keep their source")
+print("=" * 78)
+BR_ID = "blackrock-2026-08:AI productivity boom"
+check("J.P. Morgan digests are unchanged by the source parameter",
+      digest() == rs.run_digest("Base", ALLOC.to_dict("records"), 1000, 5, 7,
+                                source="jpm"))
+dbr = rs.run_digest("Base", ALLOC.to_dict("records"), 1000, 5, 7, source=BR_ID)
+check("same inputs on BlackRock give a different digest", dbr != digest())
+dave = DB.create_user("dave", "password123")
+rj = DB.save_run(dave, record(), digest())
+rbr = DB.save_run(dave, rs.make_record(0, "", "Base", ALLOC, 1000, 5, 7, res,
+                                       source=BR_ID), dbr)
+check("a BlackRock run is saved beside the J.P. Morgan one",
+      rj is not None and rbr is not None)
+check("source round-trips through the database",
+      DB.get_run(dave, rbr.id).record.source == BR_ID
+      and DB.get_run(dave, rj.id).record.source == "jpm")
+check("auto label names the BlackRock scenario",
+      rbr.record.label == "Run 2 · BlackRock (AI productivity boom) · Base · 5y")
+check("history table shows the assumptions column",
+      list(rs.history_table([rj.record, rbr.record])["Assumptions"])
+      == ["J.P. Morgan", "BlackRock · AI productivity boom"])
 
 check("postgres:// URLs are routed to psycopg 3",
       dbm.normalize_url("postgres://u:p@h/db") == "postgresql+psycopg://u:p@h/db")

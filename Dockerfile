@@ -29,7 +29,9 @@ COPY requirements.txt .
 RUN pip install --index-url ${PIP_INDEX} --trusted-host ${PIP_HOST} \
         -r requirements.txt
 
-COPY *.py jpm_correlations.csv ./
+COPY app.py ./
+COPY keepp_mc/ keepp_mc/
+COPY scripts/manage_users.py scripts/manage_users.py
 COPY .streamlit/config.toml .streamlit/config.toml
 
 # Run as a non-root user. The only thing the app writes is the SQLite

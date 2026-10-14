@@ -32,8 +32,8 @@ Two things change at 58 lines that do not matter at six.
 import numpy as np
 import pandas as pd
 
-import jpm_ltcma as jpm
-import optimizer as opt
+from . import jpm_ltcma as jpm
+from . import optimizer as opt
 
 # Every investable line. The published correlation matrix carries a 59th row,
 # U.S. Inflation, which is not investable and so is never a candidate weight.
@@ -63,9 +63,10 @@ def _num(x, default=0.0) -> float:
     return default if v != v else v
 
 
-def universe_alloc(alloc: pd.DataFrame) -> pd.DataFrame:
-    """All 58 investable lines as an allocation frame, carrying the user's own
-    numbers wherever they have them.
+def universe_alloc(alloc: pd.DataFrame, src=None) -> pd.DataFrame:
+    """Every investable line of `src` (J.P. Morgan's 58 by default, or
+    BlackRock's 34) as an allocation frame, carrying the user's own numbers
+    wherever they have them.
 
     The frame is deliberately in exactly the shape app.py's `alloc` already
     has, so the whole optimizer panel — correlations, categories, bands, the
@@ -83,10 +84,11 @@ def universe_alloc(alloc: pd.DataFrame) -> pd.DataFrame:
     averaging two hand-typed overrides would invent a third number that
     neither sleeve asked for.
     """
+    src = src or jpm        # the assumptions source (J.P. Morgan by default)
     held = {}
     for _, row in alloc.iterrows():
-        name = jpm.resolve(row["LTCMA line"])
-        if name not in jpm.BY_NAME:
+        name = src.resolve(row["LTCMA line"])
+        if name not in src.BY_NAME:
             continue
         w = _num(row.get("Weight %"))
         if name in held:
@@ -97,11 +99,11 @@ def universe_alloc(alloc: pd.DataFrame) -> pd.DataFrame:
                           "Vol %": _num(row.get("Vol %"))}
 
     rows = []
-    for name, comp, _arith, vol, _c25, cat in jpm.LINES:
+    for name, comp, _arith, vol, _c25, cat in src.LINES:
         h = held.get(name)
         rows.append({
-            "Category": jpm.CATEGORY_NAME[cat],
-            "LTCMA line": jpm.LABEL[name],
+            "Category": src.CATEGORY_NAME[cat],
+            "LTCMA line": src.LABEL[name],
             "Weight %": h["Weight %"] if h else 0.0,
             "Return %": h["Return %"] if h else comp,
             "Vol %": h["Vol %"] if h else vol,

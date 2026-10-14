@@ -2,7 +2,7 @@
 
 Run after any change to engine.py, jpm_ltcma.py or the LTCMA data:
 
-    python test_engine.py
+    python tests/test_engine.py
 
 Covers three things: the engine still reproduces the signed-off Excel workbook,
 J.P. Morgan's published correlation matrix loads and behaves, and the sleeve
@@ -11,8 +11,14 @@ table's sync rules hold.
 import numpy as np
 import pandas as pd
 
-import jpm_ltcma as J
-from engine import simulate
+import sys
+from pathlib import Path
+
+# Run as a script (python tests/test_x.py): put the repo root on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from keepp_mc import jpm_ltcma as J
+from keepp_mc.engine import simulate
 
 ok = True
 
