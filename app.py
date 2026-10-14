@@ -242,6 +242,17 @@ def get_db(url: str) -> dbm.RunDB:
 
 try:
     DB = get_db(database_url())
+    # cache_resource outlives a code update: after a redeploy (or a module
+    # reload while developing) it can hand back a RunDB built by the OLD
+    # db.py, which returns old-style RunRecords (e.g. without `source`).
+    # The class object changes on every reload, so a mismatch means stale.
+    if not isinstance(DB, dbm.RunDB):
+        try:
+            DB.engine.dispose()
+        except Exception:
+            pass
+        get_db.clear()
+        DB = get_db(database_url())
 except Exception as e:                    # bad URL, database down, wrong password
     st.error("The run database could not be reached, so the app cannot start. "
              "Check `[database] url` in the app's secrets.")
