@@ -34,6 +34,7 @@ import pandas as pd
 
 from . import jpm_ltcma as jpm
 from . import optimizer as opt
+from . import personal_lines as pl
 
 # Every investable line. The published correlation matrix carries a 59th row,
 # U.S. Inflation, which is not investable and so is never a candidate weight.
@@ -86,7 +87,18 @@ def universe_alloc(alloc: pd.DataFrame, src=None) -> pd.DataFrame:
     """
     src = src or jpm        # the assumptions source (J.P. Morgan by default)
     held = {}
+    personal = {}           # Keepp's own lines, held in Custom (personal_lines)
     for _, row in alloc.iterrows():
+        if pl.is_personal(row["LTCMA line"]):
+            nm = str(row["LTCMA line"]).strip()
+            w = _num(row.get("Weight %"))
+            if nm in personal:
+                personal[nm]["Weight %"] += w
+            else:
+                personal[nm] = {"Weight %": w,
+                                "Return %": _num(row.get("Return %")),
+                                "Vol %": _num(row.get("Vol %"))}
+            continue
         name = src.resolve(row["LTCMA line"])
         if name not in src.BY_NAME:
             continue
@@ -108,6 +120,11 @@ def universe_alloc(alloc: pd.DataFrame, src=None) -> pd.DataFrame:
             "Return %": h["Return %"] if h else comp,
             "Vol %": h["Vol %"] if h else vol,
         })
+    # A personal line is only a candidate when the portfolio holds it: it has
+    # no published figures of its own to offer the optimizer otherwise.
+    for nm, h in personal.items():
+        rows.append({"Category": src.CATEGORY_NAME[pl.CATEGORY],
+                     "LTCMA line": nm, **h})
     return pd.DataFrame(rows, columns=ALLOC_COLS)
 
 

@@ -28,6 +28,8 @@ from keepp_mc import db as dbm
 from keepp_mc import blackrock_cma as brc
 from keepp_mc import jpm_ltcma as jpm
 from keepp_mc import optimizer as opt
+from keepp_mc import personal_lines as pl
+from keepp_mc import cashflows as cfm
 from keepp_mc import run_store as rs
 from keepp_mc import universe as uni
 from keepp_mc.engine import simulate
@@ -693,7 +695,7 @@ def sleeve_inputs(alloc: pd.DataFrame):
 
 def corr_of(alloc: pd.DataFrame):
     """Published correlation sub-matrix — shared by simulation and optimizer."""
-    return SRC.corr_for(list(alloc["LTCMA line"]))
+    return pl.corr_for(SRC, list(alloc["LTCMA line"]))
 
 
 def bump_editors():
@@ -980,8 +982,9 @@ st.markdown(
     f'happen over the next {years} year{"s" if years != 1 else ""}.</p>',
     unsafe_allow_html=True)
 
-tab_over, tab_mix, tab_opt, tab_det = st.tabs(
-    ["Overview", "Your mix", "Improve the mix", "Details & saved runs"],
+tab_over, tab_mix, tab_opt, tab_det, tab_cf = st.tabs(
+    ["Overview", "Your mix", "Improve the mix", "Details & saved runs",
+     "Contributions & withdrawals"],
     key="nav", on_change="rerun")
 
 
@@ -1176,7 +1179,7 @@ with tab_mix:
                     width='stretch', num_rows="dynamic",
                     column_config={
                         "LTCMA line": st.column_config.SelectboxColumn(
-                            "Investment", options=SRC.CHOICES[key],
+                            "Investment", options=pl.choices(SRC, key),
                             width="medium", required=True,
                             help=f"{SRC_NAME} lines in {cat}. "
                                  f"Type to filter."),
@@ -1196,7 +1199,7 @@ with tab_mix:
                                  "moves up or down in a year."),
                     },
                 )
-                synced, d = SRC.sync_group(g_prev, edited, key)
+                synced, d = pl.sync_group(SRC, g_prev, edited, key)
                 # A deleted row shifts the rows below it, and sync_group's
                 # line-change check is positional against the base — rebase.
                 dirty_any = dirty_any or d or len(synced) < len(g_prev)
@@ -1460,7 +1463,7 @@ def _saved_runs_body(current_digest):
 
 
 if off:
-    for t in (tab_over, tab_opt, tab_det):
+    for t in (tab_over, tab_opt, tab_det, tab_cf):
         with t:
             if empty:
                 st.info("**Start on the Your mix tab.** Pick the investments "
@@ -1793,7 +1796,7 @@ with tab_opt:
 
     opt_mu, opt_vols = opt.inputs_from_percent(opt_alloc["Return %"],
                                                opt_alloc["Vol %"])
-    opt_cov = opt.covariance(opt_vols, SRC.corr_for(opt_alloc["LTCMA line"]))
+    opt_cov = opt.covariance(opt_vols, pl.corr_for(SRC, opt_alloc["LTCMA line"]))
     cur_w = np.asarray(opt_alloc["Weight %"], dtype=float) / 100.0
 
     groups = {}
@@ -2496,4 +2499,241 @@ with tab_det:
         'relative to realised markets; figures are nominal USD with no fees, taxes or '
         'cashflows. The "bad year" figure on the Overview is a normal approximation '
         '(average return − 1.645 × volatility), not a simulated number.'
+        '</div>', unsafe_allow_html=True)
+
+
+
+# ==========================================================================
+# TAB — Contributions & withdrawals
+#
+# A separate simulation (keepp_mc/cashflows.py) on the same mix, assumptions,
+# horizon, number of futures and seed as the tabs above. Nothing above reads
+# from it, and its runs are not auto-saved: the main tabs keep the lump-sum
+# model exactly as before.
+# ==========================================================================
+@st.cache_data(show_spinner=False, max_entries=16)
+def run_cashflows(w, r, v, corr_flat, amount, flows, paths, years, seed, timing):
+    corr = np.array(corr_flat, dtype=float).reshape(len(w), len(w))
+    return cfm.simulate_cashflows(list(w), list(r), list(v), corr, amount,
+                                  [cfm.Flow(*f) for f in flows], paths, years,
+                                  seed, timing)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def find_withdrawal(w, r, v, corr_flat, amount, years, paths, seed, success,
+                    growth, timing, contributions):
+    corr = np.array(corr_flat, dtype=float).reshape(len(w), len(w))
+    return cfm.max_sustainable_withdrawal(
+        list(w), list(r), list(v), corr, amount, years, paths, seed, success,
+        growth, timing, [cfm.Flow(*f) for f in contributions])
+
+
+with tab_cf:
+    section("Add money in, or take money out, along the way",
+            f"The same {paths:,} futures as the other tabs — same mix, "
+            f"assumptions and seed — but with money added or withdrawn each "
+            f"month or year. Starts from {money(amount)} (set in the sidebar) "
+            f"over {years} year{'s' if years != 1 else ''}. This tab does not "
+            f"change any figure on the other tabs.")
+
+    CF_COLS = ["Type", "Amount $", "How often", "From year", "To year",
+               "Grows % a year"]
+    if "cf_base" not in st.session_state:
+        st.session_state.cf_base = pd.DataFrame(
+            [{"Type": cfm.WITHDRAWAL, "Amount $": 50_000.0,
+              "How often": cfm.YEARLY, "From year": 1, "To year": int(years),
+              "Grows % a year": 0.0}], columns=CF_COLS)
+    sched = st.data_editor(
+        st.session_state.cf_base, key="cf_schedule", hide_index=True,
+        num_rows="dynamic", width="stretch",
+        column_config={
+            "Type": st.column_config.SelectboxColumn(
+                options=[cfm.CONTRIBUTION, cfm.WITHDRAWAL], required=True),
+            "Amount $": st.column_config.NumberColumn(
+                min_value=0.0, step=1_000.0, format="$%,.0f",
+                help="Per payment, in today's dollars."),
+            "How often": st.column_config.SelectboxColumn(
+                options=[cfm.MONTHLY, cfm.YEARLY], required=True),
+            "From year": st.column_config.NumberColumn(
+                min_value=1, max_value=30, step=1, format="%d"),
+            "To year": st.column_config.NumberColumn(
+                min_value=1, max_value=30, step=1, format="%d",
+                help="Last year with this payment, inclusive."),
+            "Grows % a year": st.column_config.NumberColumn(
+                min_value=-20.0, max_value=20.0, step=0.1, format="%.1f",
+                help="E.g. 2.5 to keep pace with inflation. Applied from "
+                     "today: year 2 pays the amount × 1.025."),
+        })
+    timing = st.radio(
+        "When money moves", [cfm.END, cfm.START], horizontal=True,
+        key="cf_timing",
+        help="End of period: the month's (or year's) return is earned first, "
+             "then the money moves. Start of period: the money moves first.")
+    st.caption("Add a row with **+**. Rows past the horizon are ignored; select "
+               "a row and press Delete to remove it.")
+
+    flows = []
+    for _, row in sched.iterrows():
+        try:
+            amt = float(row["Amount $"] or 0)
+            fy, ly = int(row["From year"]), int(row["To year"])
+            gr = float(row["Grows % a year"] or 0)
+        except (TypeError, ValueError):
+            continue
+        if amt > 0 and row["Type"] in (cfm.CONTRIBUTION, cfm.WITHDRAWAL) \
+                and row["How often"] in (cfm.MONTHLY, cfm.YEARLY):
+            flows.append((row["Type"], amt, row["How often"], fy,
+                          min(ly, int(years)), gr))
+
+    cw, cr, cv, ccorr = sleeve_inputs(alloc)
+    with st.spinner("Simulating with cash flows…"):
+        cfr = run_cashflows(cw, cr, cv, tuple(ccorr.flatten()), float(amount),
+                            tuple(flows), int(paths), int(years), int(seed),
+                            timing)
+
+    lasts = 1.0 - float(cfr.depleted.mean())
+    p05, p50, p95 = cfr.value_pct[-1, 0], cfr.value_pct[-1, 2], cfr.value_pct[-1, 4]
+    has_out = cfr.paid_out_planned > 0
+    if has_out:
+        lead = (f'The money lasts all <b>{years} years</b> in '
+                f'<b>{lasts*100:.1f}%</b> of futures')
+    else:
+        lead = f'After <b>{years} years</b> the typical value is'
+    st.markdown(
+        f'<div class="hero"><div class="q">{lead}</div>'
+        f'<div class="big">{money(p50)}<small>typical ending value</small></div>'
+        f'<div class="s">In 9 out of 10 futures it ends between '
+        f'<b>{money(p05)}</b> and <b>{money(p95)}</b>. With no money moving, '
+        f'the same futures end at a typical <b>{money(cfr.no_flow_median)}</b>. '
+        f'The investments themselves grow about <b>{pct(cfr.twr_median)}</b> a '
+        f'year in the typical future — money moving in or out changes how much '
+        f'is invested, not the return on it.</div></div>',
+        unsafe_allow_html=True)
+
+    k1, k2, k3, k4 = st.columns(4)
+    dead_m = cfr.depletion_month[cfr.depleted]
+    k1.markdown(card("Chance the money lasts", pct(lasts),
+                     ("No simulated future runs out." if lasts >= 1.0 else
+                      f"{one_in(1 - lasts).capitalize()} futures run out "
+                      f"within {years} years.") if has_out else
+                     "Nothing is withdrawn, so it cannot run out.",
+                     hot=has_out and lasts < 0.9), unsafe_allow_html=True)
+    k2.markdown(card("If it runs out, typically in",
+                     f"year {np.median(dead_m) / 12:.0f}" if len(dead_m) else "—",
+                     f"Earliest: year {np.ceil(dead_m.min() / 12):.0f}."
+                     if len(dead_m) else "No simulated future runs out."),
+                unsafe_allow_html=True)
+    k3.markdown(card("Money put in", money(cfr.paid_in),
+                     "Planned contributions over the horizon."),
+                unsafe_allow_html=True)
+    k4.markdown(card("Money taken out", money(cfr.paid_out_planned),
+                     f"Planned. Paid on average: {money(cfr.paid_out_mean)} "
+                     f"(less when a future runs out)."),
+                unsafe_allow_html=True)
+
+    # ---- value over time, in dollars ----------------------------------------
+    section("How the money could develop, year by year",
+            "Shaded bands: where the value is in half (darker) and 9 in 10 "
+            "(lighter) of futures. A future that runs out stays at $0.")
+    vf = pd.DataFrame(cfr.value_pct, columns=["p05", "p25", "p50", "p75", "p95"])
+    vf["Year"] = cfr.year_marks
+    for c_ in ("p05", "p50", "p95"):
+        vf[c_ + "_l"] = vf[c_].map(money)
+    vax = alt.Axis(title=None, format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                   domain=False, ticks=False, tickCount=6, labelFontSize=12)
+    xax = alt.Axis(title="Years from today", titleColor=INK_3, labelColor=INK_3,
+                   grid=False, tickMinStep=1, format="d", labelFontSize=12,
+                   domainColor=GRID, tickColor=GRID, titleFontWeight=400)
+    vb = alt.Chart(vf)
+    tip = [alt.Tooltip("Year:Q", title="Year"),
+           alt.Tooltip("p95_l:N", title="Strong markets"),
+           alt.Tooltip("p50_l:N", title="Typical"),
+           alt.Tooltip("p05_l:N", title="Weak markets")]
+    chart_v = (
+        vb.mark_area(color=BAND_OUTER, opacity=.9).encode(
+            x=alt.X("Year:Q", axis=xax), y=alt.Y("p05:Q", axis=vax), y2="p95:Q",
+            tooltip=tip)
+        + vb.mark_area(color=BAND_INNER, opacity=.9).encode(
+            x="Year:Q", y="p25:Q", y2="p75:Q", tooltip=tip)
+        + vb.mark_line(color=ACCENT_DK, strokeWidth=2.5).encode(
+            x="Year:Q", y="p50:Q", tooltip=tip)
+        + alt.Chart(pd.DataFrame({"y": [amount]})).mark_rule(
+            color=INK_3, strokeDash=[4, 4], opacity=.8).encode(y="y:Q")
+    ).properties(height=340).configure_view(strokeWidth=0)
+    st.altair_chart(chart_v, width="stretch")
+
+    if has_out:
+        section("Chance the money has run out, by year")
+        dp = pd.DataFrame({"Year": cfr.year_marks, "p": cfr.p_depleted * 100})
+        dp["p_l"] = dp["p"].map(lambda x: f"{x:.1f}%")
+        st.altair_chart(
+            alt.Chart(dp).mark_area(color=BRICK, opacity=.18, line={"color": BRICK})
+            .encode(x=alt.X("Year:Q", axis=xax),
+                    y=alt.Y("p:Q", title=None, scale=alt.Scale(domain=[0, max(
+                        5, float(dp["p"].max()) * 1.15)]),
+                            axis=alt.Axis(format=".0f", labelExpr="datum.label + '%'",
+                                          labelColor=INK_3, gridColor=GRID,
+                                          domain=False, ticks=False)),
+                    tooltip=[alt.Tooltip("Year:Q"),
+                             alt.Tooltip("p_l:N", title="Run out by then")])
+            .properties(height=200).configure_view(strokeWidth=0),
+            width="stretch")
+
+    with st.expander("Year-by-year numbers"):
+        tbl = pd.DataFrame({
+            "Year": cfr.year_marks,
+            "Weak (5th)": cfr.value_pct[:, 0], "25th": cfr.value_pct[:, 1],
+            "Typical (median)": cfr.value_pct[:, 2], "75th": cfr.value_pct[:, 3],
+            "Strong (95th)": cfr.value_pct[:, 4],
+            "Run out by then %": cfr.p_depleted * 100})
+        st.dataframe(tbl, hide_index=True, width="stretch", column_config={
+            **{c_: st.column_config.NumberColumn(format="$%,.0f")
+               for c_ in ["Weak (5th)", "25th", "Typical (median)", "75th",
+                          "Strong (95th)"]},
+            "Run out by then %": st.column_config.NumberColumn(format="%.1f")})
+        st.download_button("Download (CSV)", tbl.round(2).to_csv(index=False),
+                           "keepp_cash_flows.csv", "text/csv",
+                           icon=":material/download:")
+
+    # ---- how much can be withdrawn --------------------------------------------
+    section("How much could be withdrawn?",
+            "The largest yearly withdrawal, taken every year of the horizon, "
+            "that the money survives in the share of futures you choose. "
+            "Contribution rows above are included; withdrawal rows are "
+            "replaced by this one.")
+    f1, f2, f3 = st.columns([1.2, 1, 1], vertical_alignment="bottom")
+    target = f1.slider("Must last in at least this share of futures",
+                       50, 99, 90, format="%d%%", key="cf_target")
+    grow = f2.number_input("Withdrawal grows % a year", -5.0, 10.0, 0.0, 0.1,
+                           format="%.1f", key="cf_grow")
+    if f3.button("Find the amount", width="stretch", type="primary",
+                 icon=":material/calculate:"):
+        with st.spinner("Searching…"):
+            contribs = tuple(f for f in flows if f[0] == cfm.CONTRIBUTION)
+            st.session_state.cf_found = (
+                find_withdrawal(cw, cr, cv, tuple(ccorr.flatten()), float(amount),
+                                int(years), int(paths), int(seed), target / 100,
+                                float(grow), timing, contribs),
+                target, grow, years, amount)
+    found = st.session_state.get("cf_found")
+    if found and found[3] == years and found[4] == amount:
+        x, tg, gr_, _, _ = found
+        st.markdown(
+            f'<div class="note">About <b>{money(x)} a year</b> '
+            f'({x / amount * 100:.1f}% of the starting {money(amount)}'
+            f'{f", rising {gr_:.1f}% a year" if gr_ else ""}) lasts all {years} '
+            f'years in {tg}% of futures on this mix.</div>',
+            unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="foot" style="margin-top:1.2rem">How this tab works: each '
+        'month the portfolio earns that month\'s simulated return and the '
+        'scheduled money is added or taken out (before or after the return, as '
+        'chosen). Withdrawals come out of every holding in proportion — '
+        'including private assets, which in reality cannot always be sold. '
+        'Amounts are in today\'s dollars and stay fixed unless a growth rate is '
+        'set; nothing adjusts spending after a bad year. A future that cannot '
+        'pay a withdrawal runs out and stays at $0. Thin-tailed returns make '
+        'running out somewhat less likely here than in real markets. Results '
+        'on this tab are not saved to Saved scenarios.'
         '</div>', unsafe_allow_html=True)
