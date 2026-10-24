@@ -2519,15 +2519,6 @@ def run_cashflows(w, r, v, corr_flat, amount, flows, paths, years, seed, timing)
                                   seed, timing)
 
 
-@st.cache_data(show_spinner=False, max_entries=16)
-def find_withdrawal(w, r, v, corr_flat, amount, years, paths, seed, success,
-                    growth, timing, contributions):
-    corr = np.array(corr_flat, dtype=float).reshape(len(w), len(w))
-    return cfm.max_sustainable_withdrawal(
-        list(w), list(r), list(v), corr, amount, years, paths, seed, success,
-        growth, timing, [cfm.Flow(*f) for f in contributions])
-
-
 with tab_cf:
     section("Add money in, or take money out, along the way",
             f"The same {paths:,} futures as the other tabs — same mix, "
@@ -2694,36 +2685,6 @@ with tab_cf:
         st.download_button("Download (CSV)", tbl.round(2).to_csv(index=False),
                            "keepp_cash_flows.csv", "text/csv",
                            icon=":material/download:")
-
-    # ---- how much can be withdrawn --------------------------------------------
-    section("How much could be withdrawn?",
-            "The largest yearly withdrawal, taken every year of the horizon, "
-            "that the money survives in the share of futures you choose. "
-            "Contribution rows above are included; withdrawal rows are "
-            "replaced by this one.")
-    f1, f2, f3 = st.columns([1.2, 1, 1], vertical_alignment="bottom")
-    target = f1.slider("Must last in at least this share of futures",
-                       50, 99, 90, format="%d%%", key="cf_target")
-    grow = f2.number_input("Withdrawal grows % a year", -5.0, 10.0, 0.0, 0.1,
-                           format="%.1f", key="cf_grow")
-    if f3.button("Find the amount", width="stretch", type="primary",
-                 icon=":material/calculate:"):
-        with st.spinner("Searching…"):
-            contribs = tuple(f for f in flows if f[0] == cfm.CONTRIBUTION)
-            st.session_state.cf_found = (
-                find_withdrawal(cw, cr, cv, tuple(ccorr.flatten()), float(amount),
-                                int(years), int(paths), int(seed), target / 100,
-                                float(grow), timing, contribs),
-                target, grow, years, amount)
-    found = st.session_state.get("cf_found")
-    if found and found[3] == years and found[4] == amount:
-        x, tg, gr_, _, _ = found
-        st.markdown(
-            f'<div class="note">About <b>{money(x)} a year</b> '
-            f'({x / amount * 100:.1f}% of the starting {money(amount)}'
-            f'{f", rising {gr_:.1f}% a year" if gr_ else ""}) lasts all {years} '
-            f'years in {tg}% of futures on this mix.</div>',
-            unsafe_allow_html=True)
 
     st.markdown(
         '<div class="foot" style="margin-top:1.2rem">How this tab works: each '

@@ -93,21 +93,5 @@ check("a withdrawal larger than the portfolio empties every future at once",
       big.depleted.all() and np.allclose(big.paid_out_mean, big.paid_out_mean))
 
 print()
-print("=" * 78)
-print("4. HOW MUCH CAN BE WITHDRAWN")
-print("=" * 78)
-x90 = cf.max_sustainable_withdrawal(*ARGS, 1e6, 10, 2000, 20260722, 0.90)
-x99 = cf.max_sustainable_withdrawal(*ARGS, 1e6, 10, 2000, 20260722, 0.99)
-check(f"a stricter target allows less ({x99:,.0f} < {x90:,.0f})", x99 < x90)
-chk = cf.simulate_cashflows(*ARGS, 1e6, [cf.Flow(cf.WITHDRAWAL, x90, cf.YEARLY, 1, 10)],
-                            2000, 10, 20260722)
-check("the found amount survives in at least 90% of futures",
-      1 - chk.depleted.mean() >= 0.90)
-chk2 = cf.simulate_cashflows(*ARGS, 1e6, [cf.Flow(cf.WITHDRAWAL, x90 * 1.02, cf.YEARLY, 1, 10)],
-                             2000, 10, 20260722)
-check("2% more than the found amount drops below 90%",
-      1 - chk2.depleted.mean() < 0.90)
-
-print()
 print("RESULT:", "all checks pass" if ok else "FAILURES ABOVE — investigate")
 raise SystemExit(0 if ok else 1)

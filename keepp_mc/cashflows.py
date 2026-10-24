@@ -170,29 +170,3 @@ def _apply_flow(V, ct, alive):
     V -= take
     out += take
     return V, out
-
-
-def max_sustainable_withdrawal(weights, rets, vols, corr, amount, years,
-                               paths, seed, success=0.90, growth_pct=0.0,
-                               timing=END, contributions: Sequence[Flow] = (),
-                               iters: int = 14) -> float:
-    """Largest flat yearly withdrawal (today's dollars, grown by growth_pct a
-    year, every year of the horizon) that the money survives with at least
-    `success` probability. Bisection: the chance of lasting falls as the
-    withdrawal rises, so one bracket and ~14 halvings pin it to < $1 in $10k.
-    """
-    def lasts(x):
-        fl = list(contributions) + [Flow(WITHDRAWAL, x, YEARLY, 1, years, growth_pct)]
-        res = simulate_cashflows(weights, rets, vols, corr, amount, fl, paths,
-                                 years, seed, timing)
-        return 1.0 - res.depleted.mean()
-    lo, hi = 0.0, float(amount)
-    while lasts(hi) >= success and hi < 1e12:   # widen if contributions help
-        lo, hi = hi, hi * 2.0
-    for _ in range(int(iters)):
-        mid = (lo + hi) / 2.0
-        if lasts(mid) >= success:
-            lo = mid
-        else:
-            hi = mid
-    return lo
