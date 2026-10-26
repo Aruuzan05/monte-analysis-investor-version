@@ -251,6 +251,9 @@ DEFAULT_LINE = {FI: "U.S. Aggregate Bonds",
                 EQ: "AC World Equity",
                 ALT: "Diversified Hedge Funds"}
 
+# The line the optimizer's cash floor and risk-free default use.
+CASH_LINE = "U.S. Cash"
+
 def sync_group(prev, edited, category_key):
     """Keep one category's sleeves internally consistent.
 

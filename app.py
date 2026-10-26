@@ -30,13 +30,10 @@ from keepp_mc import jpm_ltcma as jpm
 from keepp_mc import optimizer as opt
 from keepp_mc import personal_lines as pl
 from keepp_mc import cashflows as cfm
+from keepp_mc import geography as geo
 from keepp_mc import run_store as rs
 from keepp_mc import universe as uni
 from keepp_mc.engine import simulate
-
-# The line the cash floor applies to. Named once so the optimizer panel and the
-# risk-free default cannot drift apart from each other.
-CASH_LINE = "U.S. Cash"
 
 # --------------------------------------------------------------------------
 # Page config + palette
@@ -988,6 +985,89 @@ tab_over, tab_mix, tab_opt, tab_det, tab_cf = st.tabs(
     key="nav", on_change="rerun")
 
 
+# --------------------------------------------------------------------------
+# Geography — region breakdown and the optimizer's geography limits
+# (keepp_mc/geography.py). A label only: no return, risk or correlation uses it.
+# --------------------------------------------------------------------------
+GEO_COLS = ["Region"] + [f"{sc} {mm} %" for sc in geo.SCOPES for mm in ("min", "max")]
+REGION_COLOR = {"US": "#2a78d6", "Europe": "#1baf7a", "Asia": "#eb6834",
+                "Japan": "#e87ba4", "Global": "#A9B4B5"}
+
+
+def geo_limits_current() -> pd.DataFrame:
+    """The geography-limits table as currently edited. The editor lives on
+    Improve the mix, which renders after Your mix, so its pending edits are
+    applied here from the widget state to keep the warning on Your mix current."""
+    base = st.session_state.get("geo_base")
+    if base is None:
+        base = pd.DataFrame([{"Region": r, **{c: np.nan for c in GEO_COLS[1:]}}
+                             for r in geo.REGIONS], columns=GEO_COLS)
+        st.session_state.geo_base = base
+    df = base.copy()
+    edits = st.session_state.get("geo_limits")
+    if edits:
+        try:
+            rows = edits.get("edited_rows", {}) if hasattr(edits, "get") \
+                else edits["edited_rows"]
+        except Exception:
+            rows = {}
+        for i, changes in rows.items():
+            for col, val in changes.items():
+                if col in df.columns:
+                    df.at[int(i), col] = val
+    return df
+
+
+def region_panel(alloc_df, key):
+    """By-region bar + region x asset-type table for an allocation frame."""
+    if alloc_df is None or len(alloc_df) == 0:
+        return
+    w = pd.to_numeric(alloc_df["Weight %"], errors="coerce").fillna(0.0)
+    if float(w.sum()) <= 0:
+        return
+    lines, cats = list(alloc_df["LTCMA line"]), list(alloc_df["Category"])
+    bd = geo.breakdown(SRC, lines, cats, list(w))
+    section("By region")
+    bar = pd.DataFrame({"Region": geo.REGIONS, "pct": bd["Total"].values,
+                        "x": ["Portfolio"] * len(geo.REGIONS)})
+    bar["lbl"] = bar["pct"].map(lambda v: f"{v:.1f}%")
+    bar = bar[bar["pct"] > 0.005]
+    st.altair_chart(
+        alt.Chart(bar).mark_bar(height=26).encode(
+            x=alt.X("sum(pct):Q", stack="zero", title=None,
+                    axis=alt.Axis(format=".0f", labelExpr="datum.label + '%'",
+                                  labelColor=INK_3, gridColor=GRID,
+                                  domain=False, ticks=False)),
+            y=alt.Y("x:N", title=None, axis=None),
+            color=alt.Color("Region:N", sort=geo.REGIONS,
+                            scale=alt.Scale(domain=geo.REGIONS,
+                                            range=[REGION_COLOR[r] for r in geo.REGIONS]),
+                            legend=alt.Legend(orient="bottom", title=None,
+                                              labelColor=INK_2)),
+            order=alt.Order("order:Q"),
+            tooltip=[alt.Tooltip("Region:N"), alt.Tooltip("lbl:N", title="Share")])
+        .transform_calculate(order=f"indexof({geo.REGIONS}, datum.Region)")
+        .properties(height=78).configure_view(strokeWidth=0),
+        width="stretch")
+    tbl = (bd.reset_index().rename(columns={"index": "Region", "Alternatives": "Alts"})
+           [["Region", "Total", "Stocks", "Bonds", "Alts"]])
+    st.dataframe(tbl, hide_index=True, width="stretch", key=f"geo_tbl_{key}",
+                 column_config={c: st.column_config.NumberColumn(format="%.1f%%")
+                                for c in ["Total", "Stocks", "Bonds", "Alts"]})
+    st.caption("Broad indices such as AC World, EAFE and World government bonds "
+               "are split by fixed regional weights from their index providers. "
+               "Global = other countries, emerging markets, and assets with no "
+               "single region (commodities, gold, hedge funds, global private "
+               "markets).")
+    bad = geo.check(geo.exposure_rows(SRC, lines, cats, geo_limits_current()),
+                    list(w / 100.0))
+    if bad:
+        st.warning("**Outside your geography limits** (set on *Improve the mix*): "
+                   + "; ".join(f"{n} {v*100:.1f}% (limit {lo*100:.0f}–{hi*100:.0f}%)"
+                               for n, v, lo, hi in bad),
+                   icon=":material/public:")
+
+
 # ==========================================================================
 # TAB — Your mix (runs first: everything else depends on the allocation)
 # ==========================================================================
@@ -1287,6 +1367,7 @@ with tab_mix:
             if ch is not None:
                 st.altair_chart(ch, width='content')
                 st.markdown(legend_html(hdf), unsafe_allow_html=True)
+        region_panel(alloc, "mix")
 
 # --------------------------------------------------------------------------
 # Saved runs panel — every run is stored in the database automatically.
@@ -1663,6 +1744,7 @@ with tab_over:
                 st.altair_chart(ch, width='content')
         with d2:
             st.markdown(legend_html(hdf, ALLOC_DESCS), unsafe_allow_html=True)
+        region_panel(alloc, "over")
 
     st.write("")
     st.markdown(
@@ -1792,7 +1874,9 @@ with tab_opt:
     opt_lines = [SRC.resolve(x) for x in opt_alloc["LTCMA line"]]
     opt_cats = list(opt_alloc["Category"])
     n_lines = len(opt_lines)
-    cash_pos = [i for i, nm in enumerate(opt_lines) if nm == CASH_LINE]
+    # Each source names its own cash line ("U.S. Cash" / "US cash"), so the cash
+    # floor and the risk-free default follow the selected assumptions.
+    cash_pos = [i for i, nm in enumerate(opt_lines) if nm == SRC.CASH_LINE]
 
     opt_mu, opt_vols = opt.inputs_from_percent(opt_alloc["Return %"],
                                                opt_alloc["Vol %"])
@@ -1822,11 +1906,12 @@ with tab_opt:
         with st.expander("Advanced limits"):
             oc1, oc2, oc3 = st.columns(3)
             rf_default = (float(opt_alloc["Return %"].iloc[cash_pos[0]])
-                          if cash_pos else 3.80)
+                          if cash_pos else float(SRC.lookup(SRC.CASH_LINE)[0]))
             rf_pct = oc1.number_input(
                 "Risk-free rate %", value=round(rf_default, 2),
                 min_value=0.0, max_value=20.0, step=0.05, format="%.2f",
-                help="Defaults to this allocation's own U.S. Cash return.")
+                help=f"Defaults to this allocation's own {SRC.CASH_LINE} return, "
+                     f"or {SRC_SHORT}'s if you don't hold it.")
             floor_pct = oc2.number_input(
                 "Keep at least this much cash %", value=5.00, min_value=0.0,
                 max_value=100.0, step=0.5, format="%.2f", disabled=not cash_pos,
@@ -1869,6 +1954,22 @@ with tab_opt:
                       f"Not available across all {N_LINES} lines — it would take minutes."))
             show_stability = show_stability and not is_universe
 
+            st.markdown('<div class="muted" style="margin:.8rem 0 .3rem">'
+                        '<b>Geography limits</b> — share of the whole portfolio. '
+                        'A cell showing <i>None</i> has no limit — type a number '
+                        'to set one, delete it to remove it. Broad indices count '
+                        'by their fixed regional split (e.g. AC World ≈ 64% US).'
+                        '</div>', unsafe_allow_html=True)
+            geo_cur = geo_limits_current()
+            st.data_editor(
+                st.session_state.geo_base, key="geo_limits", hide_index=True,
+                width='stretch', num_rows="fixed", disabled=["Region"],
+                column_config={
+                    "Region": st.column_config.TextColumn(width="small"),
+                    **{c: st.column_config.NumberColumn(
+                        c.replace(" %", ""), min_value=0.0, max_value=100.0,
+                        step=0.5, format="%.1f") for c in GEO_COLS[1:]}})
+
         lower = np.zeros(n_lines)
         upper = np.full(n_lines, cap_pct / 100.0)
         if cash_pos:
@@ -1877,8 +1978,10 @@ with tab_opt:
         band_map = {r["Category"]: (float(r["Min %"]) / 100.0,
                                     float(r["Max %"]) / 100.0)
                     for _, r in bands_df.iterrows()}
+        geo_rows = geo.exposure_rows(SRC, opt_lines, opt_cats, geo_cur)
         limits = opt.Limits(lower, upper, groups,
-                            {k: band_map.get(k, (0.0, 1.0)) for k in groups})
+                            {k: band_map.get(k, (0.0, 1.0)) for k in groups},
+                            exposure=geo_rows)
 
         target_pct = budget_pct = None
         if objective in (OBJ_MINVOL, OBJ_MAXRET):
@@ -1894,6 +1997,8 @@ with tab_opt:
                              for k, v in limits.sleeve_band.items())),
                 round(float(floor_pct), 6), round(float(cap_pct), 6),
                 bool(is_universe), metric,
+                tuple((nm, round(lo, 8), round(hi, 8), tuple(np.round(a, 8)))
+                      for nm, a, lo, hi in geo_rows),
             )
             with target_slot:
                 try:
@@ -2173,6 +2278,32 @@ with tab_opt:
                             f'<span class="arrow">→</span>{row["Optimal %"]:.0f}%',
                             f'{d:+.1f} pts'.replace("-", "−")),
                             unsafe_allow_html=True)
+
+            # ---- by region ------------------------------------------------
+            section("By region",
+                    "Share of the whole portfolio in each region, today and "
+                    "suggested. Geography limits you set are shown alongside.")
+            g_now = geo.breakdown(SRC, opt_lines, opt_cats, list(cur_w * 100))
+            g_new = geo.breakdown(SRC, opt_lines, opt_cats, list(w_opt * 100))
+            g_tbl = pd.DataFrame({
+                "Region": geo.REGIONS,
+                "Today %": g_now["Total"].values,
+                "Suggested %": g_new["Total"].values,
+                "Change (pts)": (g_new["Total"] - g_now["Total"]).values,
+                "Stocks today %": g_now["Stocks"].values,
+                "Stocks suggested %": g_new["Stocks"].values})
+            st.dataframe(g_tbl, hide_index=True, width='stretch',
+                         column_config={
+                             **{c: st.column_config.NumberColumn(format="%.1f%%")
+                                for c in ["Today %", "Suggested %",
+                                          "Stocks today %", "Stocks suggested %"]},
+                             "Change (pts)": st.column_config.NumberColumn(
+                                 format="%+.1f")})
+            if geo_rows:
+                st.caption("Geography limits applied: " + "; ".join(
+                    f"{nm} {lo*100:.0f}–{hi*100:.0f}% → "
+                    f"{float(np.asarray(a) @ w_opt) * 100:.1f}%"
+                    for nm, a, lo, hi in geo_rows))
 
             # ---- what changes ---------------------------------------------
             section("What would change",

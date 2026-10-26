@@ -159,6 +159,9 @@ DEFAULT_LINE = {FI: "US aggregate bond index",
                 EQ: "All country large cap equities",
                 ALT: "Hedge funds (global)"}
 
+# The line the optimizer's cash floor and risk-free default use.
+CASH_LINE = "US cash"
+
 _RET_COLS = [f"ret_{h}y" for h in HORIZONS]
 CSV_COLS = (["scenario", "asset_class", "asset", "index"] + _RET_COLS
             + ["vol", "corr_gov_bonds", "corr_equities"])
@@ -335,6 +338,7 @@ class BlackRockSource:
     CATEGORY_NAME = CATEGORY_NAME
     CATEGORY_KEYS = CATEGORY_KEYS
     DEFAULT_LINE = DEFAULT_LINE
+    CASH_LINE = CASH_LINE
     EXPANSION: set = set()
     KEY = KEY
     NAME = NAME
