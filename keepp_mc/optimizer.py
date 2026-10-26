@@ -57,10 +57,25 @@ class Limits:
     upper: np.ndarray
     sleeve_index: dict
     sleeve_band: dict
+    # Weighted exposure limits, e.g. geography: (name, coef, lo, hi) with
+    # lo <= coef'w <= hi. coef[i] is the share of line i counted (a line that
+    # is 65% US counts 0.65). Empty by default, so every existing caller and
+    # result is unchanged.
+    exposure: tuple = ()
 
     @property
     def n(self) -> int:
         return len(self.lower)
+
+    def band_rows(self):
+        """Every grouped limit as (name, coef, lo, hi): the category bands as
+        0/1 rows, then any weighted exposure limits."""
+        for name, idx in self.sleeve_index.items():
+            lo, hi = self.sleeve_band[name]
+            a = np.zeros(self.n); a[idx] = 1.0
+            yield name, a, float(lo), float(hi)
+        for name, a, lo, hi in self.exposure:
+            yield name, np.asarray(a, dtype=float), float(lo), float(hi)
 
 
 # --------------------------------------------------------------------------
@@ -133,6 +148,19 @@ def _named_infeasibility(limits):
         if lo[idx].sum() > bhi + 1e-9:
             return (f"{name}: its maximum of {bhi:.2%} is already exceeded by "
                     f"the floors inside it ({lo[idx].sum():.2%})")
+
+    for name, a, elo, ehi in limits.exposure:
+        a = np.asarray(a, dtype=float)
+        if elo > ehi + 1e-12:
+            return f"{name}: minimum {elo:.2%} is above maximum {ehi:.2%}"
+        # Fully invested, so a'w can never exceed the largest share on offer.
+        reach = float(a.max()) if a.size else 0.0
+        if elo > reach + 1e-9:
+            return (f"{name}: its minimum of {elo:.2%} cannot be reached — "
+                    f"the investments available reach at most {reach:.2%}")
+        if float(a @ lo) > ehi + 1e-9:
+            return (f"{name}: its maximum of {ehi:.2%} is already exceeded by "
+                    f"the floors ({float(a @ lo):.2%})")
     return None
 
 
@@ -161,12 +189,9 @@ def feasible_start(limits) -> np.ndarray:
 
     n = limits.n
     A_ub, b_ub = [], []
-    for name, idx in limits.sleeve_index.items():
-        blo, bhi = limits.sleeve_band[name]
-        row = np.zeros(n); row[idx] = -1.0
-        A_ub.append(row); b_ub.append(-blo)          # -sum <= -min
-        row = np.zeros(n); row[idx] = 1.0
-        A_ub.append(row); b_ub.append(bhi)           #  sum <=  max
+    for name, a, blo, bhi in limits.band_rows():
+        A_ub.append(-a); b_ub.append(-blo)           # -sum <= -min
+        A_ub.append(a); b_ub.append(bhi)             #  sum <=  max
     A_ub = np.array(A_ub) if A_ub else None
     b_ub = np.array(b_ub) if b_ub else None
     bounds = list(zip(limits.lower, limits.upper))
@@ -181,8 +206,9 @@ def feasible_start(limits) -> np.ndarray:
     if first is None:
         raise Infeasible(
             "no allocation satisfies every constraint at once. Check the cash "
-            "floor against the category bands, and that the category minimums "
-            "leave room for 100% in total.")
+            "floor against the category bands"
+            + (" and the geography limits" if limits.exposure else "")
+            + ", and that the minimums leave room for 100% in total.")
 
     rng = np.random.default_rng(20260722)
     pts = [first]
@@ -222,9 +248,7 @@ def _constraints(mu, limits, target_return=None, vol_budget=None, cov=None):
         A.append(np.asarray(mu, dtype=float))
         lb.append(float(target_return))
         ub.append(float(target_return))
-    for name, idx in limits.sleeve_index.items():
-        lo, hi = limits.sleeve_band[name]
-        row = np.zeros(n); row[idx] = 1.0
+    for name, row, lo, hi in limits.band_rows():
         A.append(row); lb.append(float(lo)); ub.append(float(hi))
 
     cons = [LinearConstraint(np.array(A), np.array(lb), np.array(ub))]
@@ -277,9 +301,8 @@ def _feasible(w, limits, mu=None, target_return=None, tol=1e-7):
         return False
     if abs(w.sum() - 1.0) > tol:
         return False
-    for name, idx in limits.sleeve_index.items():
-        lo, hi = limits.sleeve_band[name]
-        if not (lo - tol <= w[idx].sum() <= hi + tol):
+    for name, a, lo, hi in limits.band_rows():
+        if not (lo - tol <= float(a @ w) <= hi + tol):
             return False
     if target_return is not None and abs(w @ mu - target_return) > tol:
         return False
@@ -309,12 +332,10 @@ def _kkt_polish(w, mu, cov, limits, target_return=None, tol=1e-8):
     if target_return is not None:
         rows.append(mu.copy())
         rhs.append(target_return - mu[fixed] @ wx[fixed])
-    for name, idx in limits.sleeve_index.items():
-        lo, hi = limits.sleeve_band[name]
-        s = w[idx].sum()
+    for name, m, lo, hi in limits.band_rows():
+        s = float(m @ w)
         near_lo, near_hi = abs(s - lo) < 1e-7, abs(s - hi) < 1e-7
         if near_lo or near_hi:
-            m = np.zeros(n); m[idx] = 1.0
             rows.append(m)
             rhs.append((lo if near_lo else hi) - m[fixed] @ wx[fixed])
 
@@ -634,12 +655,9 @@ def _lp(mu, limits, sense=+1):
     """
     n = limits.n
     A_ub, b_ub = [], []
-    for name, idx in limits.sleeve_index.items():
-        blo, bhi = limits.sleeve_band[name]
-        row = np.zeros(n); row[idx] = -1.0
-        A_ub.append(row); b_ub.append(-blo)
-        row = np.zeros(n); row[idx] = 1.0
-        A_ub.append(row); b_ub.append(bhi)
+    for name, a, blo, bhi in limits.band_rows():
+        A_ub.append(-a); b_ub.append(-blo)
+        A_ub.append(a); b_ub.append(bhi)
     res = linprog(c=sense * np.asarray(mu, dtype=float),
                   A_ub=np.array(A_ub) if A_ub else None,
                   b_ub=np.array(b_ub) if b_ub else None,

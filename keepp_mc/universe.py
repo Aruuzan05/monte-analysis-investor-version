@@ -369,9 +369,7 @@ def max_sharpe_qp(mu, cov, limits, rf):
 
     # Is any feasible portfolio above rf? One LP: maximise ex'w over the set.
     A_ub, b_ub = [], []
-    for name, idx in limits.sleeve_index.items():
-        lo, hi = limits.sleeve_band[name]
-        row = np.zeros(n); row[idx] = 1.0
+    for name, row, lo, hi in limits.band_rows():
         A_ub += [row, -row]; b_ub += [hi, -lo]
     lp = linprog(-ex, A_ub=np.array(A_ub) if A_ub else None,
                  b_ub=np.array(b_ub) if b_ub else None,
@@ -396,9 +394,8 @@ def max_sharpe_qp(mu, cov, limits, rf):
         if limits.upper[i] < 1.0:
             r = e.copy(); r[n] = -limits.upper[i]
             rows.append(r); lb.append(-np.inf); ub.append(0.0)
-    for name, idx in limits.sleeve_index.items():
-        lo, hi = limits.sleeve_band[name]
-        g = np.zeros(n + 1); g[idx] = 1.0
+    for name, a, lo, hi in limits.band_rows():
+        g = np.r_[a, 0.0]
         r = g.copy(); r[n] = -lo
         rows.append(r); lb.append(0.0); ub.append(np.inf)
         r = g.copy(); r[n] = -hi
