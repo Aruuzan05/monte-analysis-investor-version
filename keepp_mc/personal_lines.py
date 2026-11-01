@@ -58,9 +58,19 @@ def proxy_of(src, label):
 
 
 def choices(src, category_key):
-    """The Custom-mode dropdown for one category: the provider's lines, plus the
-    two personal lines under Alternatives."""
+    """The Custom-mode dropdown for one category, in three parts:
+
+      1. the provider's own catalogue lines (also what Standard mode offers);
+      2. any lines the provider exposes for Custom only — on BlackRock that is
+         the three J.P. Morgan real-asset lines, since BlackRock's CMA has no
+         commodities, gold or digital-asset line to offer;
+      3. Keepp's two personal lines, under Alternatives.
+
+    Standard mode reads src.CHOICES directly and so sees only part 1, which is
+    what keeps it a single provider's catalogue.
+    """
     base = list(src.CHOICES[category_key])
+    base += list(getattr(src, "EXTRA_CHOICES", {}).get(category_key, []))
     return base + NAMES if category_key == CATEGORY else base
 
 

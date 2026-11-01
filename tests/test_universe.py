@@ -41,11 +41,11 @@ BASE = pd.DataFrame([
     {"Category": "Equities", "LTCMA line": J.LABEL["AC World Equity"],
      "Weight %": 20.0, "Return %": 12.88, "Vol %": 14.47},
     {"Category": "Alternatives", "LTCMA line": J.LABEL["Private Equity"],
-     "Weight %": 10.0, "Return %": 10.20, "Vol %": 19.78},
+     "Weight %": 10.0, "Return %": 9.80, "Vol %": 20.31},
     {"Category": "Alternatives", "LTCMA line": J.LABEL["Diversified Hedge Funds"],
-     "Weight %": 0.0, "Return %": 5.30, "Vol %": 5.75},
+     "Weight %": 0.0, "Return %": 6.70, "Vol %": 5.94},
     {"Category": "Alternatives", "LTCMA line": J.LABEL["Commodities"],
-     "Weight %": 8.0, "Return %": 4.60, "Vol %": 18.32},
+     "Weight %": 8.0, "Return %": 4.80, "Vol %": 17.97},
 ])
 
 # ==========================================================================
@@ -53,16 +53,20 @@ print("=" * 78)
 print("1. UNIVERSE FRAME — every investable line, with the user's own numbers")
 print("=" * 78)
 uni = U.universe_alloc(BASE)
-check(f"one row per investable line ({len(uni)} rows)", len(uni) == 58)
-check("58 investable lines, not the matrix's 59 — U.S. Inflation is not one",
-      len(U.INVESTABLE) == 58 and J.INFLATION_ROW not in U.INVESTABLE)
+check(f"one row per investable line ({len(uni)} rows)", len(uni) == 59)
+check("59 investable lines — 58 published plus Digital Assets; U.S. Inflation "
+      "and the excluded Americas Core Real Estate are not investable",
+      len(U.INVESTABLE) == 59 and J.INFLATION_ROW not in U.INVESTABLE
+      and not (set(J.EXCLUDED_DUPLICATES) & set(U.INVESTABLE))
+      and set(J.HOUSE_LINES) <= set(U.INVESTABLE))
 check("the frame is in app.py's own allocation shape",
       list(uni.columns) == U.ALLOC_COLS)
 check("every line resolves to a real catalogue line",
       all(J.resolve(x) in J.BY_NAME for x in uni["LTCMA line"]))
-check("every line has a published correlation row",
+check("every line has a correlation row — its own, or the one its house "
+      "line borrows",
       U.INVESTABLE == [J.resolve(x) for x in uni["LTCMA line"]]
-      and J.corr_for(list(uni["LTCMA line"])).shape == (58, 58))
+      and J.corr_for(list(uni["LTCMA line"])).shape == (59, 59))
 
 by_line = {J.resolve(r["LTCMA line"]): r for _, r in uni.iterrows()}
 check("weights total what the current allocation totals (100%)",
@@ -74,13 +78,13 @@ check("an unheld line arrives at 0%",
 check("a Keepp-sourced sleeve keeps the USER's return, not J.P. Morgan's "
       "(12.88 not 7.00 for AC World Equity)",
       by_line["AC World Equity"]["Return %"] == 12.88
-      and J.BY_NAME["AC World Equity"][0] == 7.00)
+      and J.BY_NAME["AC World Equity"][0] == 7.50)
 check("a Keepp-sourced sleeve keeps the user's vol too",
       by_line["U.S. Cash"]["Vol %"] == 0.67
       and by_line["U.S. Inv Grade Corporate Bonds"]["Return %"] == 5.00)
 check("an unheld line takes J.P. Morgan's published compound return and vol",
       (by_line["Japanese Equity"]["Return %"],
-       by_line["Japanese Equity"]["Vol %"]) == (8.80, 15.77))
+       by_line["Japanese Equity"]["Vol %"]) == (9.10, 16.89))
 check("categories match the catalogue's own",
       all(J.CATEGORY_NAME[J.category_of(r["LTCMA line"])] == r["Category"]
           for _, r in uni.iterrows()))
@@ -91,7 +95,7 @@ dup = pd.concat([BASE, pd.DataFrame([
      "Weight %": 5.0, "Return %": 9.99, "Vol %": 11.11}])], ignore_index=True)
 uni_dup = U.universe_alloc(dup)
 d_line = uni_dup[uni_dup["LTCMA line"] == J.LABEL["AC World Equity"]].iloc[0]
-check("two sleeves on one line still produce one row", len(uni_dup) == 58)
+check("two sleeves on one line still produce one row", len(uni_dup) == 59)
 check("their weights are summed (20 + 5 = 25)", d_line["Weight %"] == 25.0)
 check("the first occurrence supplies Return/Vol — no invented average",
       d_line["Return %"] == 12.88 and d_line["Vol %"] == 14.47)
@@ -107,7 +111,7 @@ junk = pd.concat([BASE, pd.DataFrame([
     {"Category": "Equities", "LTCMA line": "Not A Real Line",
      "Weight %": 5.0, "Return %": 1.0, "Vol %": 1.0}])], ignore_index=True)
 check("an unknown line is ignored rather than crashing the frame",
-      len(U.universe_alloc(junk)) == 58
+      len(U.universe_alloc(junk)) == 59
       and abs(U.universe_alloc(junk)["Weight %"].sum() - 100.0) < 1e-9)
 
 # ==========================================================================
@@ -141,9 +145,21 @@ check(f"refined Sharpe {new_s:.6f} matches max_sharpe's {ref_s:.6f} "
       f"(gap {abs(new_s - ref_s):.2e})", abs(new_s - ref_s) < 1e-5)
 check(f"and beats the raw 24-point grid it started from ({grid_s:.6f})",
       new_s >= grid_s - 1e-12)
-check(f"weights match max_sharpe's to under 0.5pp "
+# The Sharpe check above is the real assertion; weights are a readability
+# check on top of it. On the 2027 inputs cash (3.20%) and high yield (6.60%)
+# are near-substitutes against rf = 3.8%, so the objective is almost flat
+# along a cash <-> high yield ridge and the two solvers stop at different
+# points on it. The next check proves that ridge is genuinely flat rather
+# than one solver being wrong, so the weight tolerance is 1.5pp.
+check(f"weights match max_sharpe's to under 1.5pp "
       f"(worst {np.abs(new_w - ref_w).max()*100:.3f}pp)",
-      np.abs(new_w - ref_w).max() < 0.005)
+      np.abs(new_w - ref_w).max() < 0.015)
+_seg = [(1 - t) * ref_w + t * new_w for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
+_seg_s = [float((s_mu @ w - RF) / np.sqrt(w @ s_cov @ w)) for w in _seg]
+check(f"...and the gap is a flat ridge, not a worse answer: Sharpe over the "
+      f"segment between them spans {max(_seg_s) - min(_seg_s):.2e}, "
+      f"{(max(_seg_s) - min(_seg_s)) / ref_s:.1e} of the Sharpe itself",
+      (max(_seg_s) - min(_seg_s)) / ref_s < 1e-4)
 check("the answer is a valid portfolio: long-only, sums to 100%",
       abs(new_w.sum() - 1.0) < 1e-9 and new_w.min() >= -1e-9)
 check("it respects the per-line cap", new_w.max() <= 0.60 + 1e-7)
@@ -236,7 +252,7 @@ print("=" * 78)
 print("4. APPLYING AN OPTIMUM — an allocation the app will actually accept")
 print("=" * 78)
 uni_small = U.universe_alloc(BASE)
-w = np.zeros(58)
+w = np.zeros(len(uni_small))      # sized off the catalogue, not a literal
 idx = {J.resolve(x): i for i, x in enumerate(uni_small["LTCMA line"])}
 w[idx["U.S. Cash"]] = 0.30
 w[idx["AC World Equity"]] = 0.50
@@ -259,12 +275,12 @@ check("categories on the applied sleeves match the catalogue",
       all(J.CATEGORY_NAME[J.category_of(r["LTCMA line"])] == r["Category"]
           for _, r in applied.iterrows()))
 check("an all-dust optimum still yields one sleeve rather than an empty table",
-      len(U.applied_sleeves(uni_small, np.full(58, 1e-9))) == 1)
+      len(U.applied_sleeves(uni_small, np.full(len(uni_small), 1e-9))) == 1)
 
 # ==========================================================================
 print()
 print("=" * 78)
-print("5. END TO END — the real 58-line universe, as the panel runs it")
+print(f"5. END TO END — the real {len(uni)}-line universe, as the panel runs it")
 print("=" * 78)
 u_lines = [J.resolve(x) for x in uni["LTCMA line"]]
 u_cats = list(uni["Category"])
@@ -278,7 +294,7 @@ for i, c in enumerate(u_cats):
 u_groups = {k: np.array(v) for k, v in u_groups.items()}
 cur_cat = {k: float(cur[i].sum()) for k, i in u_groups.items()}
 
-lower, upper = np.zeros(58), np.full(58, 0.15)
+lower, upper = np.zeros(len(u_lines)), np.full(len(u_lines), 0.15)
 cash_i = u_lines.index("U.S. Cash")
 lower[cash_i] = 0.05
 u_lim = opt.Limits(lower, upper, u_groups,
@@ -291,7 +307,7 @@ u_w0 = opt.feasible_start(u_lim)
 u_fr = opt.efficient_frontier(u_mu, u_cov, u_lim, u_w0, 24)
 u_w, u_s = U.tangency_on_frontier(u_mu, u_cov, u_lim, u_fr, RF)
 elapsed = time.perf_counter() - t0
-print(f"       solved 58 lines in {elapsed:.1f}s "
+print(f"       solved {len(u_lines)} lines in {elapsed:.1f}s "
       f"({len(u_fr[0])} frontier points, Sharpe {u_s:.4f})")
 
 check("the optimum is a valid portfolio: long-only, sums to 100%",
@@ -307,14 +323,14 @@ check("it beats the current portfolio on Sharpe",
 u_cat_df = U.category_table(u_cats, cur, u_w)
 u_tabs = U.line_tables(u_lines, u_cats, cur, u_w)
 shown = sum(len(t) for t in u_tabs.values())
-print(f"       {int((u_w >= U.DUST_PCT/100).sum())} of 58 lines above the "
+print(f"       {int((u_w >= U.DUST_PCT/100).sum())} of {len(u_lines)} lines above the "
       f"{U.DUST_PCT:.2f}% threshold · {shown} rows shown across 3 categories")
 check("the category table still totals 100%",
       abs(u_cat_df["Optimal %"].sum() - 100.0) < 1e-7)
 check("the per-line tables total 100% too — the residual rows account for "
       "every basis point the threshold hides",
       abs(sum(t["Optimal %"].sum() for t in u_tabs.values()) - 100.0) < 1e-7)
-check("the whole 58-line universe collapses to a readable table",
+check(f"the whole {len(u_lines)}-line universe collapses to a readable table",
       shown < 25)
 check("applying it produces sleeves totalling exactly 100%",
       abs(U.applied_sleeves(uni, u_w)["Weight %"].sum() - 100.0) < 1e-6)
@@ -326,7 +342,7 @@ print("\nmax_sharpe_qp (homogenised single QP)")
 t0 = time.perf_counter()
 q_w, q_s = U.max_sharpe_qp(u_mu, u_cov, u_lim, RF)
 q_elapsed = time.perf_counter() - t0
-print(f"       solved 58 lines in {q_elapsed:.2f}s (Sharpe {q_s:.6f}) "
+print(f"       solved {len(u_lines)} lines in {q_elapsed:.2f}s (Sharpe {q_s:.6f}) "
       f"vs {elapsed:.1f}s on the frontier path (Sharpe {u_s:.6f})")
 check("it is a valid portfolio inside every constraint",
       opt._feasible(q_w, u_lim, tol=1e-7))

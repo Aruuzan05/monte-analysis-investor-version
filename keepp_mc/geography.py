@@ -63,7 +63,7 @@ SPLIT_SOURCES = {
 }
 
 # --------------------------------------------------------------------------
-# J.P. Morgan 2026 LTCMA — all 58 lines
+# J.P. Morgan 2027 LTCMA — all 59 lines
 # --------------------------------------------------------------------------
 JPM = {
     # United States
@@ -79,7 +79,7 @@ JPM = {
         "U.S. Equity Value Factor", "U.S. Equity Momentum Factor",
         "U.S. Equity Quality Factor", "U.S. Equity Minimum Volatility Factor",
         "U.S. Equity Dividend Yield Factor",
-        "U.S. Core Real Estate", "U.S. Value-Added Real Estate", "U.S. REITs"]},
+        "U.S. Core Real Estate", "U.S. REITs"]},
     # Europe
     "Euro Area Large Cap": EU, "UK Large Cap": EU,
     "European Core Real Estate": EU,
@@ -101,9 +101,10 @@ JPM = {
         "Emerging Markets Equity", "Emerging Markets Sovereign Debt",
         "Emerging Markets Local Currency Debt",
         "Emerging Markets Corporate Bonds",
-        "Global Convertible Bonds hedged", "Global Core Infrastructure",
+        "Global Convertible Bonds hedged", "Global Core Real Estate",
+        "Global Core Infrastructure",
         "Global Core Transport", "Global Timberland",
-        "Commodities", "Gold",
+        "Commodities", "Gold", "Digital Assets",
         "Diversified Hedge Funds", "Event Driven Hedge Funds",
         "Long Bias Hedge Funds", "Relative Value Hedge Funds",
         "Macro Hedge Funds",
@@ -112,7 +113,9 @@ JPM = {
 }
 
 # --------------------------------------------------------------------------
-# BlackRock CMA, August 2026 — all 34 lines
+# BlackRock CMA, August 2026 — all 34 lines, plus the three J.P. Morgan
+# lines offered in BlackRock Custom mode (same treatment as their J.P. Morgan
+# originals: no meaningful geography, so Global)
 # --------------------------------------------------------------------------
 BLACKROCK = {
     "Europe large cap equities": EU,
@@ -149,6 +152,9 @@ BLACKROCK = {
     "Global direct lending (levered)": GL,
     "Developed infrastructure debt": GL,
     "Global direct lending (unlevered)": GL,
+    "Commodities (J.P. Morgan)": GL,
+    "Gold (J.P. Morgan)": GL,
+    "Digital Assets (J.P. Morgan)": GL,
 }
 
 

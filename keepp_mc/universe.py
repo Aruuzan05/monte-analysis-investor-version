@@ -321,13 +321,28 @@ def applied_sleeves(uni_alloc: pd.DataFrame, opt_w,
     total = float(opt_w[keep].sum())
 
     src = uni_alloc.reset_index(drop=True)
-    rows = []
-    for i in sorted(keep, key=lambda j: (src.at[j, "Category"], -opt_w[j])):
-        rows.append({"Category": src.at[i, "Category"],
-                     "LTCMA line": src.at[i, "LTCMA line"],
-                     "Weight %": round(float(opt_w[i]) / total * 100, 4),
-                     "Return %": _num(src.at[i, "Return %"]),
-                     "Vol %": _num(src.at[i, "Vol %"])})
+    order = sorted(keep, key=lambda j: (src.at[j, "Category"], -opt_w[j]))
+    shares = [round(float(opt_w[i]) / total * 100, 4) for i in order]
+
+    # Rounding each share to 4dp leaves the TOTAL up to n/2 * 1e-4 away from
+    # 100 — with 13 surviving sleeves out of the 59-line catalogue it came to
+    # 100.0001, and the docstring above promises exactly 100 for a reason: the
+    # app refuses an allocation that does not total 100 until it is fixed by
+    # hand. Hand the rounding residual to the largest sleeve, the one line
+    # where a ten-thousandth of a percent is certainly invisible. Doing it any
+    # other way (more decimals, or renormalising after rounding) just moves
+    # the same residual somewhere less visible.
+    drift = round(100.0 - sum(shares), 4)
+    if drift:
+        shares[int(np.argmax(shares))] = round(
+            shares[int(np.argmax(shares))] + drift, 4)
+
+    rows = [{"Category": src.at[i, "Category"],
+             "LTCMA line": src.at[i, "LTCMA line"],
+             "Weight %": w,
+             "Return %": _num(src.at[i, "Return %"]),
+             "Vol %": _num(src.at[i, "Vol %"])}
+            for i, w in zip(order, shares)]
     return pd.DataFrame(rows, columns=ALLOC_COLS)
 
 

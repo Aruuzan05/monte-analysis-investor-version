@@ -156,6 +156,103 @@ def simulate(
     ), repaired
 
 
+@dataclass(frozen=True)
+class Ladder:
+    """The four steps between "weights times returns" and what the model runs.
+
+    Every field is a DECIMAL per annum (0.0641 = 6.41%), matching Result.
+    `per_sleeve` is (n, 2): each sleeve's w_i * g_i and w_i * sigma_i^2 / 2.
+    """
+    weight_sum: float          # percent, exactly as entered (may not be 100)
+    weighted_simple: float     # sum w_i g_i          <- the back-of-envelope
+    variance_uplift: float     # sum w_i sigma_i^2/2
+    arithmetic: float          # = weighted_simple + variance_uplift
+    portfolio_vol: float       # sqrt(w' Cov w)
+    variance_drag: float       # sigma_p^2 / 2
+    compound: float            # = arithmetic - variance_drag
+    avg_sleeve_vol: float      # sum w_i sigma_i
+    dispersion: float          # share of the gap from unequal sleeve vols
+    diversification: float     # share of the gap from correlations below 1
+    per_sleeve: np.ndarray
+
+
+def return_ladder(weights, rets, vols, corr) -> Ladder:
+    """Reconcile a weighted average of the Return column with the simulation.
+
+    WHY THIS EXISTS. Multiplying each weight by its Return % and adding up is
+    the obvious sanity check, and it does NOT give the simulator's expected
+    return. The panel in app.py that shows this ladder exists so the gap is
+    self-explaining rather than a conversation every quarter.
+
+    THE ARITHMETIC. Return % is a COMPOUND (geometric) figure, g_i. The
+    arithmetic mean of the same asset is g_i + sigma_i^2 / 2, so the
+    portfolio's arithmetic mean is
+
+        mu_p = sum_i w_i (g_i + sigma_i^2 / 2)
+
+    which is the "Average return / yr" card. It is Result.exp_arith, computed
+    the same way from the same inputs. What the portfolio actually compounds at
+    then gives back its OWN variance, not the sleeves':
+
+        g_p = mu_p - sigma_p^2 / 2,    sigma_p^2 = w' Cov w
+
+    Substituting leaves the whole story in one line:
+
+        g_p - sum_i w_i g_i = 1/2 [ sum_i w_i sigma_i^2 - sigma_p^2 ]
+
+    The right-hand side is never negative, so the simulation's median always
+    lands at or ABOVE a weighted average of the Return column. The portfolio is
+    less volatile than the average of its sleeves, so it loses less to variance
+    drag than a weighted average of the sleeves implicitly assumes.
+
+    WHERE THE GAP COMES FROM. It splits exactly in two, both non-negative:
+
+        dispersion      = 1/2 [ sum_i w_i sigma_i^2 - (sum_i w_i sigma_i)^2 ]
+        diversification = 1/2 [ (sum_i w_i sigma_i)^2 - sigma_p^2 ]
+
+    Dispersion is the spread of volatilities across sleeves (it survives even
+    at rho = 1); diversification is what correlations below 1 add on top.
+    Both vanish only in two cases, and in exactly those two the weighted
+    average IS right: a single sleeve, or sleeves with identical volatility
+    all correlated at 1.00.
+
+    WEIGHTS ARE NOT RENORMALISED. simulate() uses them as entered, so an
+    allocation summing to 90% leaves a tenth of the book earning nothing. This
+    does the same, and reports `weight_sum` so the UI can say so.
+
+    All inputs in percent, like simulate(): weights 45.0, rets 5.0, vols 7.02.
+    """
+    w = np.asarray(weights, dtype=float) / 100.0
+    g = np.asarray(rets, dtype=float) / 100.0
+    s = np.asarray(vols, dtype=float) / 100.0
+    C = np.asarray(corr, dtype=float)
+
+    weighted_simple = float(w @ g)
+    sleeve_var = float(w @ s**2)                  # sum w_i sigma_i^2
+    variance_uplift = sleeve_var / 2.0
+    arithmetic = weighted_simple + variance_uplift
+
+    cov = np.outer(s, s) * C
+    var_p = float(max(w @ cov @ w, 0.0))
+    portfolio_vol = float(np.sqrt(var_p))
+    variance_drag = var_p / 2.0
+
+    avg_sleeve_vol = float(w @ s)
+    return Ladder(
+        weight_sum=float(np.asarray(weights, dtype=float).sum()),
+        weighted_simple=weighted_simple,
+        variance_uplift=variance_uplift,
+        arithmetic=arithmetic,
+        portfolio_vol=portfolio_vol,
+        variance_drag=variance_drag,
+        compound=arithmetic - variance_drag,
+        avg_sleeve_vol=avg_sleeve_vol,
+        dispersion=(sleeve_var - avg_sleeve_vol**2) / 2.0,
+        diversification=(avg_sleeve_vol**2 - var_p) / 2.0,
+        per_sleeve=np.column_stack([w * g, w * s**2 / 2.0]),
+    )
+
+
 # expand_correlation() used to fabricate an N x N matrix from a 6x6 of general
 # asset types plus a within-type guess. It is gone: jpm_ltcma.corr_for() now
 # returns a sub-matrix of J.P. Morgan's published 59 x 59, so there is nothing

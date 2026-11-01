@@ -13,7 +13,7 @@ reading the Result object engine.simulate() already returns.
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from io import BytesIO
 from typing import Optional, Sequence
@@ -101,6 +101,24 @@ def auto_label(seq: int, mode: str, years: int, source: str = "jpm") -> str:
     return f"Run {seq} · {mode} · {years}y"
 
 
+def renumber(records: Sequence[RunRecord]) -> list[RunRecord]:
+    """Number `records` (oldest first) 1..N for display.
+
+    The database never reuses a sequence number, so after deletions the list
+    would read 3, 7, 12, ... This gives the runs still in the list a gapless
+    1..N instead. An untouched auto label ("Run 7 · ...") follows its new
+    number; a label the user typed is kept as it is.
+    """
+    out = []
+    for i, r in enumerate(records, 1):
+        label = r.label
+        if label in (auto_label(r.seq, r.mode, r.years, r.source),
+                     f"Run {r.seq}"):
+            label = auto_label(i, r.mode, r.years, r.source)
+        out.append(replace(r, seq=i, label=label))
+    return out
+
+
 def source_label(source: str) -> str:
     """'J.P. Morgan' or 'BlackRock · <scenario>' for tables and exports."""
     s = str(source or "jpm")
@@ -176,9 +194,97 @@ def _sheet_name(prefix: str, seq: int, label: str) -> str:
     return name[:_MAX_SHEET_LEN] or f"{prefix}{seq}"
 
 
-def to_excel_bytes(records: Sequence[RunRecord]) -> bytes:
+# Number formats for a caller-supplied Summary, by header. Values stay
+# numbers in Excel (sortable, usable in formulas); only the display changes.
+_SUMMARY_FORMATS = {"Avg return %": "0.00", "Volatility %": "0.00",
+                    "Chance of loss %": "0.00", "Typical ×": '0.000"×"',
+                    "Futures": "#,##0", "Seed": "0"}
+
+
+def _style_summary(ws, df: pd.DataFrame) -> None:
+    from openpyxl.styles import Font
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    for j, col in enumerate(df.columns, start=1):
+        letter = ws.cell(row=1, column=j).column_letter
+        fmt = _SUMMARY_FORMATS.get(col)
+        if fmt:
+            for i in range(2, len(df) + 2):
+                ws.cell(row=i, column=j).number_format = fmt
+        width = max([len(str(col))] + [len(str(v)) for v in df[col]])
+        ws.column_dimensions[letter].width = min(max(8, width + 2), 48)
+
+
+def _write_grouped(ws, df: pd.DataFrame) -> None:
+    """Write a frame with two-level columns (group, sub) the way the page
+    shows it: a merged group header over Keepp / Provider / Difference, and
+    single columns (sub == "") merged down both header rows."""
+    from openpyxl.styles import Alignment, Font
+    from openpyxl.utils import get_column_letter
+    bold, center = Font(bold=True), Alignment(horizontal="center",
+                                              vertical="center",
+                                              wrap_text=True)
+    cols = list(df.columns)
+    j = 0
+    while j < len(cols):
+        g, sub = cols[j]
+        if sub == "":
+            ws.cell(row=1, column=j + 1, value=g)
+            ws.merge_cells(start_row=1, start_column=j + 1, end_row=2,
+                           end_column=j + 1)
+            j += 1
+            continue
+        k = j
+        while k + 1 < len(cols) and cols[k + 1][0] == g:
+            k += 1
+        ws.cell(row=1, column=j + 1, value=g)
+        if k > j:
+            ws.merge_cells(start_row=1, start_column=j + 1, end_row=1,
+                           end_column=k + 1)
+        for c in range(j, k + 1):
+            ws.cell(row=2, column=c + 1, value=cols[c][1])
+        j = k + 1
+    for row in (1, 2):
+        for c in range(1, len(cols) + 1):
+            ws.cell(row=row, column=c).font = bold
+            ws.cell(row=row, column=c).alignment = center
+    for i, rec in enumerate(df.itertuples(index=False), start=3):
+        for c, v in enumerate(rec, start=1):
+            cell = ws.cell(row=i, column=c,
+                           value=None if pd.isna(v) else v)
+            g, sub = cols[c - 1]
+            if isinstance(v, float):
+                diff = sub.startswith("Difference")
+                if "USD" in g:
+                    cell.number_format = ('+"$"#,##0;-"$"#,##0;"$"0' if diff
+                                          else '"$"#,##0')
+                else:
+                    cell.number_format = "+0.00;-0.00;0.00" if diff else "0.00"
+    ws.freeze_panes = "B3"
+    for c, (g, sub) in enumerate(cols, start=1):
+        width = max([len(str(sub)), 0 if sub else len(str(g))]
+                    + [len(str(v)) for v in df.iloc[:, c - 1].astype(str)])
+        ws.column_dimensions[get_column_letter(c)].width = min(
+            max(11, width + 2), 44)
+    ws.row_dimensions[1].height = 32
+
+
+def to_excel_bytes(records: Sequence[RunRecord],
+                   summary: Optional[pd.DataFrame] = None,
+                   scenarios: Optional[pd.DataFrame] = None) -> bytes:
     """A multi-sheet .xlsx: a Summary sheet, plus one sheet per saved run
     with that run's allocation table and its horizon-percentile table.
+
+    `summary`, when given, is written as the Summary sheet exactly as passed.
+    The app passes its Keepp vs provider returns table, with two-level
+    columns (metric, Keepp / Provider / Difference) written as a grouped
+    header. A frame with ordinary columns is written as a plain table.
+    Without it, history_table(records) is used.
+
+    `scenarios`, when given, follows as a "Scenarios" sheet — the app passes
+    the Saved scenarios list as it is on screen. Run sheets follow, in the
+    order of `records`.
 
     Returns raw bytes, ready for st.download_button — nothing here touches
     disk or Streamlit. Exporting an empty history still returns an openable
@@ -186,7 +292,19 @@ def to_excel_bytes(records: Sequence[RunRecord]) -> bytes:
     """
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        history_table(records).to_excel(writer, sheet_name="Summary", index=False)
+        if summary is not None and isinstance(summary.columns,
+                                              pd.MultiIndex):
+            ws = writer.book.create_sheet("Summary")
+            _write_grouped(ws, summary)
+        elif summary is not None:
+            summary.to_excel(writer, sheet_name="Summary", index=False)
+            _style_summary(writer.sheets["Summary"], summary)
+        else:
+            history_table(records).to_excel(writer, sheet_name="Summary",
+                                            index=False)
+        if scenarios is not None:
+            scenarios.to_excel(writer, sheet_name="Scenarios", index=False)
+            _style_summary(writer.sheets["Scenarios"], scenarios)
         for r in records:
             sheet = _sheet_name("Run ", r.seq, r.label)
             alloc_df = pd.DataFrame(r.sleeves, columns=ALLOC_COLS)

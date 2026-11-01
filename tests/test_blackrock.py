@@ -147,6 +147,67 @@ res, repaired = simulate([40, 40, 10, 10], [S.BY_NAME[n][0] for n in sel],
 check("engine simulates a BlackRock portfolio without repairing the matrix",
       not repaired and res.rows[-1]["Median x"] > 1.0)
 
+# ==========================================================================
+print()
+print("=" * 78)
+print("J.P. MORGAN EXTRAS — commodities, gold and digital inside BlackRock")
+print("=" * 78)
+# BlackRock's CMA has no commodities, gold or digital-asset line, so three
+# J.P. Morgan lines are offered in Custom mode only.
+import numpy as _np
+from keepp_mc import personal_lines as _pl
+
+E = br.get(br.DEFAULT_SCENARIO, 10)
+extras = [n for n, *_ in E.EXTRA_LINES]
+check(f"three extras are offered: {extras}",
+      extras == list(br.JPM_EXTRAS))
+check(f"BlackRock's own catalogue is untouched at {len(E.LINES)} lines",
+      len(E.LINES) == 34 and not (set(extras) & {n for n, *_ in E.LINES}))
+check("Standard mode cannot reach them — they are not in CHOICES",
+      not any(n in E.CHOICES[k] for k in E.CATEGORY_KEYS for n in extras))
+check("Custom mode can — personal_lines.choices() appends them under "
+      "Alternatives",
+      all(n in _pl.choices(E, br.ALT) for n in extras))
+check("they carry J.P. Morgan's own return and vol",
+      all(E.lookup(n) == jpm.lookup(br.JPM_EXTRAS[n]) for n in extras))
+check("...including Digital Assets at 10.00 / 46.70",
+      E.lookup("Digital Assets (J.P. Morgan)") == (10.0, 46.7))
+
+# The disclosure the UI makes: these do not move with scenario or horizon,
+# because J.P. Morgan publishes one number where BlackRock publishes many.
+fixed = {sc: br.get(sc, 10).lookup("Gold (J.P. Morgan)") for sc in br.SCENARIOS}
+check(f"they do not move across BlackRock's scenarios {sorted(set(fixed.values()))}",
+      len(set(fixed.values())) == 1)
+by_h = {y: br.get(br.DEFAULT_SCENARIO, y).lookup("Gold (J.P. Morgan)")
+        for y in (5, 10, 30)}
+check("they do not move across horizons either",
+      len(set(by_h.values())) == 1)
+moves = {y: br.get(br.DEFAULT_SCENARIO, y).lookup("US large cap equities")
+         for y in (5, 10, 30)}
+check("while BlackRock's own lines do move across horizons (the contrast the "
+      "UI has to state)", len(set(moves.values())) > 1)
+
+check(f"the matrix grew to {br.CORR.shape[0]}x{br.CORR.shape[1]} and its "
+      f"repair is still cosmetic ({br.CORR_MAX_REPAIR:.5f} < 0.01)",
+      br.CORR.shape == (37, 37) and br.CORR_MAX_REPAIR < 0.01)
+check("the extras took their J.P. Morgan factor loadings — they have no "
+      "published BlackRock ones",
+      all(_np.isnan(br._BASE.set_index("asset").loc[n, "corr_gov_bonds"])
+          for n in extras))
+mixed = ["US large cap equities", "US cash", "US aggregate bond index"] + extras
+CM = E.corr_for(mixed)
+try:
+    _np.linalg.cholesky(CM)
+    mixed_ok = True
+except _np.linalg.LinAlgError:
+    mixed_ok = False
+check(f"a BlackRock portfolio holding all three factorises without repair "
+      f"(min eig {_np.linalg.eigvalsh(CM).min():+.5f})", mixed_ok)
+gi, di = mixed.index("Gold (J.P. Morgan)"), mixed.index("Digital Assets (J.P. Morgan)")
+check(f"gold x digital comes through as {CM[gi, di]:.4f}, inherited from the "
+      f"J.P. Morgan construction rather than 1.00",
+      0.9 < CM[gi, di] < 1.0)
+
 print()
 print("RESULT:", "all checks pass" if ok else "FAILURES ABOVE — investigate")
 raise SystemExit(0 if ok else 1)

@@ -104,12 +104,49 @@ SCENARIOS = {
 }
 DEFAULT_SCENARIO = "Starting point"
 
-_ASSET_CLASS = {"Fixed income": FI, "Equities": EQ, "Private markets": ALT}
+_ASSET_CLASS = {"Fixed income": FI, "Equities": EQ, "Private markets": ALT,
+                # classes BlackRock does not publish; carried by the
+                # J.P. Morgan extras below
+                "Real assets": ALT, "Digital assets": ALT}
 _EXCLUDE = {"Global 60/40 portfolio"}          # a portfolio, not an asset class
 
 # BlackRock asset -> the J.P. Morgan line whose correlation row supplies the
 # "family" part of its correlations (layer b above). Chosen once, here, for
 # the closest economic match; never picked by the user.
+# --------------------------------------------------------------------------
+# J.P. Morgan lines offered inside a BlackRock portfolio
+# --------------------------------------------------------------------------
+# BlackRock's CMA has no commodities, gold or digital-asset line at all, so a
+# BlackRock portfolio could not hold a real-asset sleeve. These three come from
+# J.P. Morgan instead: {name shown: the J.P. Morgan line it IS}.
+#
+# Mixing providers inside one portfolio is a real compromise, so note what is
+# and is not mixed. The CORRELATIONS are not mixed: BlackRock's matrix is
+# already built on J.P. Morgan's published correlations (see the module
+# docstring), so these three sit in the same construction as every other line,
+# taking their J.P. Morgan factor loadings through the path _build_corr()
+# already has for assets with no published BlackRock loadings. What IS mixed is
+# returns and volatilities, which come from a different provider with a
+# different as-of date.
+#
+# Two consequences the UI has to state rather than let the user discover:
+#   - these three DO NOT MOVE when the scenario changes. BlackRock's scenarios
+#     reprice BlackRock's assets; J.P. Morgan publishes one set of numbers.
+#   - they do not move with the horizon either, for the same reason, while
+#     every BlackRock line is interpolated across their 5-to-30-year figures.
+#
+# CUSTOM MODE ONLY. They are kept out of LINES and CHOICES, so Standard mode
+# stays a pure BlackRock catalogue, and are offered through EXTRA_CHOICES,
+# which personal_lines.choices() appends for the Custom dropdowns.
+JPM_EXTRAS = {
+    "Commodities (J.P. Morgan)": "Commodities",
+    "Gold (J.P. Morgan)": "Gold",
+    "Digital Assets (J.P. Morgan)": "Digital Assets",
+}
+_EXTRA_CLASS = {"Commodities (J.P. Morgan)": "Real assets",
+                "Gold (J.P. Morgan)": "Real assets",
+                "Digital Assets (J.P. Morgan)": "Digital assets"}
+
 CORR_PROXY = {
     # Equities
     "Europe large cap equities": "Euro Area Large Cap",
@@ -148,6 +185,8 @@ CORR_PROXY = {
     "Global direct lending (levered)": "Direct Lending",
     "Developed infrastructure debt": "Commercial Mortgage Loans",
     "Global direct lending (unlevered)": "Direct Lending",
+    # The J.P. Morgan extras are their own proxy — they ARE those lines.
+    **{br: jl for br, jl in JPM_EXTRAS.items()},
 }
 
 # BlackRock's own bond factor is "Global ex-US treasuries (hedged)": its
@@ -293,8 +332,38 @@ def _build_corr(base, names):
 
 # Loaded at import — except when this file is run as the extraction script,
 # which must work before blackrock_cma.csv exists.
+def _add_jpm_extras(df, base, names):
+    """Append the J.P. Morgan extras to the loaded frames.
+
+    blackrock_cma.csv is BlackRock's published data and is left untouched —
+    these rows are built here instead, so the file never carries another
+    provider's numbers. Returns flat across every horizon and identical in
+    every scenario, because that is what J.P. Morgan publishes: one number.
+    Volatility is J.P. Morgan's. Both BlackRock factor-loading columns are
+    NaN, which is what routes them through _build_corr()'s existing
+    "no published loadings, use the J.P. Morgan proxy's" branch.
+    """
+    rows = []
+    for br, jl in JPM_EXTRAS.items():
+        comp, _arith, vol, *_ = jpm.BY_NAME[jl]
+        for sc in SCENARIOS:
+            rows.append({"scenario": sc, "asset_class": _EXTRA_CLASS[br],
+                         "asset": br,
+                         "index": f"J.P. Morgan 2027 LTCMA · {jl}",
+                         **{c: float(comp) for c in _RET_COLS},
+                         "vol": float(vol),
+                         "corr_gov_bonds": np.nan,
+                         "corr_equities": np.nan})
+    extra = pd.DataFrame(rows, columns=CSV_COLS)
+    df = pd.concat([df, extra], ignore_index=True)
+    base = pd.concat(
+        [base, extra[extra["scenario"] == DEFAULT_SCENARIO]
+         .reset_index(drop=True)], ignore_index=True)
+    return df, base, names + list(JPM_EXTRAS)
+
+
 if __name__ != "__main__":
-    DATA, _BASE, NAMES = _load()
+    DATA, _BASE, NAMES = _add_jpm_extras(*_load())
     CORR_RAW, CORR, FACTOR_LOADINGS, CORR_MAX_REPAIR = _build_corr(_BASE, NAMES)
     CORR_INDEX = {n: i for i, n in enumerate(NAMES)}
     _CAT_OF = {n: _ASSET_CLASS[c]
@@ -349,17 +418,27 @@ class BlackRockSource:
         self.years = int(years)
         ret = returns_for(scenario, years)
         r5 = returns_for(scenario, HORIZONS[0])
-        order = [n for k in CATEGORY_KEYS for n in NAMES if _CAT_OF[n] == k]
-        # (name, compound, arithmetic ~ g + s^2/2, vol, 5-year compound, cat)
-        self.LINES = [(n, round(ret[n], 4),
-                       round(ret[n] + (_VOL[n] ** 2) / 200.0, 4),
-                       round(_VOL[n], 4), round(r5[n], 4), _CAT_OF[n])
-                      for n in order]
-        self.BY_NAME = {n: (c, a, v, c5, f) for n, c, a, v, c5, f in self.LINES}
-        self.LABEL = {n: n for n, *_ in self.LINES}
+        def rows(members):
+            # (name, compound, arithmetic ~ g + s^2/2, vol, 5y compound, cat)
+            return [(n, round(ret[n], 4),
+                     round(ret[n] + (_VOL[n] ** 2) / 200.0, 4),
+                     round(_VOL[n], 4), round(r5[n], 4), _CAT_OF[n])
+                    for k in CATEGORY_KEYS for n in members
+                    if _CAT_OF[n] == k]
+
+        # LINES is BlackRock's own catalogue and nothing else, so Standard
+        # mode and every "N asset classes" label stay pure BlackRock. The
+        # J.P. Morgan extras are a separate list, offered in Custom only.
+        self.LINES = rows([n for n in NAMES if n not in JPM_EXTRAS])
+        self.EXTRA_LINES = rows([n for n in NAMES if n in JPM_EXTRAS])
+        self.BY_NAME = {n: (c, a, v, c5, f)
+                        for n, c, a, v, c5, f in self.LINES + self.EXTRA_LINES}
+        self.LABEL = {n: n for n, *_ in self.LINES + self.EXTRA_LINES}
         self.NAME_OF = dict(self.LABEL)
         self.CHOICES = {k: [n for n, *_, c in self.LINES if c == k]
                         for k in CATEGORY_KEYS}
+        self.EXTRA_CHOICES = {k: [n for n, *_, c in self.EXTRA_LINES if c == k]
+                              for k in CATEGORY_KEYS}
         self.CORR, self.CORR_INDEX = CORR, CORR_INDEX
         self.SOURCE_ID = source_id(scenario)
         self.HORIZON_NOTE = horizon_note(years)

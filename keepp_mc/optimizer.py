@@ -57,7 +57,7 @@ class Limits:
     upper: np.ndarray
     sleeve_index: dict
     sleeve_band: dict
-    # Weighted exposure limits, e.g. geography: (name, coef, lo, hi) with
+    # Weighted exposure limits, e.g. geography or liquidity: (name, coef, lo, hi) with
     # lo <= coef'w <= hi. coef[i] is the share of line i counted (a line that
     # is 65% US counts 0.65). Empty by default, so every existing caller and
     # result is unchanged.
@@ -207,7 +207,7 @@ def feasible_start(limits) -> np.ndarray:
         raise Infeasible(
             "no allocation satisfies every constraint at once. Check the cash "
             "floor against the category bands"
-            + (" and the geography limits" if limits.exposure else "")
+            + (" and the geography / liquidity limits" if limits.exposure else "")
             + ", and that the minimums leave room for 100% in total.")
 
     rng = np.random.default_rng(20260722)

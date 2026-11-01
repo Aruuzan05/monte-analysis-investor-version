@@ -35,7 +35,8 @@ print("=" * 78)
 check("every J.P. Morgan line has a region",
       all(n in geo.JPM for n, *_ in jpm.LINES) and len(geo.JPM) == len(jpm.LINES))
 check("every BlackRock line has a region",
-      all(n in geo.BLACKROCK for n, *_ in BR.LINES) and len(geo.BLACKROCK) == len(BR.LINES))
+      all(n in geo.BLACKROCK for n, *_ in BR.LINES + BR.EXTRA_LINES)
+      and len(geo.BLACKROCK) == len(BR.LINES) + len(BR.EXTRA_LINES))
 for nm in ["ACWI", "WORLD", "EAFE", "WORLD_EX_US", "WGBI", "WGBI_EX_US"]:
     check(f"{nm} split sums to 100", sum(getattr(geo, nm).values()) == 100)
 check("every line's shares sum to 1 (both providers)",

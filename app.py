@@ -17,6 +17,7 @@ load behind the Great Firewall.
 import hmac
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import altair as alt
@@ -30,10 +31,12 @@ from keepp_mc import jpm_ltcma as jpm
 from keepp_mc import optimizer as opt
 from keepp_mc import personal_lines as pl
 from keepp_mc import cashflows as cfm
+from keepp_mc import compare as cmpm
 from keepp_mc import geography as geo
+from keepp_mc import liquidity as liq
 from keepp_mc import run_store as rs
 from keepp_mc import universe as uni
-from keepp_mc.engine import simulate
+from keepp_mc.engine import return_ladder, simulate
 
 # --------------------------------------------------------------------------
 # Page config + palette
@@ -197,7 +200,7 @@ st.markdown(f"""
 
 
 # --------------------------------------------------------------------------
-# Database + accounts. Every run is saved to the signed-in user's account
+# Database + accounts. Saved runs go to the signed-in user's account
 # (db.py), so the run history survives a refresh, a container restart and a
 # change of device.
 #
@@ -380,7 +383,7 @@ UID, UNAME = USER
 
 
 # --------------------------------------------------------------------------
-# Base case — J.P. Morgan 2026 LTCMA. Returns, volatilities and the sleeve list
+# Base case — J.P. Morgan 2027 LTCMA. Returns, volatilities and the sleeve list
 # are hardcoded and cannot be edited in Base; the WEIGHTS can.
 # See git history for the full provenance notes on each sleeve.
 # --------------------------------------------------------------------------
@@ -397,12 +400,12 @@ BASE_SLEEVES = [
      "Keepp · 3M T-bill"),
     ("EQ",  "AC World Equity",                20.0,      7,   16.78,
      "Keepp · MSCI World 10y"),
-    ("ALT", "Private Equity",                 10.0,  10.20,  19.78,  ""),
-    ("ALT", "Diversified Hedge Funds",         0.0,   5.30,   5.75,  ""),
-    ("ALT", "Commodities",                     8.0,   4.60,  18.32,  ""),
+    ("ALT", "Private Equity",                 10.0,   9.80,  20.31,  ""),
+    ("ALT", "Diversified Hedge Funds",         0.0,   6.70,   5.94,  ""),
+    ("ALT", "Commodities",                     8.0,   4.80,  17.97,  ""),
 ]
 
-MODE_BASE = "Base · JPM 2026 LTCMA"
+MODE_BASE = "Base · JPM 2027 LTCMA"
 MODE_CUSTOM = "Custom"
 
 # Plain-language names for the holdings a client is most likely to see.
@@ -436,51 +439,81 @@ CATEGORY_PLAIN = {
 SOURCES = [
     ("Fixed Income", "5.00% · 7.02%",
      "Return: index YTM of global IG corporates — iShares Global Corp Bond UCITS trailing "
-     "distribution yield 4.26% plus pull-to-par, cross-checked against JPM 2026 LTCMA US IG "
-     "at 5.2%. Volatility: regime anchor √(25%·3.3%² + 50%·6.1%² + 25%·10.6%²) = 7.02%."),
-    ("Public Equities &amp; Mutual Funds", "12.88% · 14.47%",
-     "Return: J.P. Morgan 2026 LTCMA, AC World Equity, "
-     "Volatility:  "
-     "J.P. Morgan 2026 LTCMA, AC World Equity"),
-    ("Private Equity &amp; Venture Capital", "10.20% · 19.78%",
-     "J.P. Morgan 2026 LTCMA, Private Equity (USD), <b>compound</b> return. The "
-     "original workbook used 11.90%, which is JPM's <i>arithmetic</i> figure for the "
-     "same line — feeding that into a field the model treats as geometric "
-     "double-counts the variance drag. Corrected here."),
-    ("Diversified Hedge Funds", "5.30% · 5.75%",
-     "J.P. Morgan 2026 LTCMA, diversified hedge funds (USD) — leveraged and net of "
-     "fees. Base weight is 0% because the deck's target allocation has no hedge fund "
-     "sleeve — allocate to it in Custom mode."),
-    ("Commodities &amp; Real Assets", "4.60% · 18.32%",
-     "J.P. Morgan 2026 LTCMA, broad commodities basket (USD), <b>compound</b> return. "
-     "As with Private Equity, the original workbook used the arithmetic figure "
-     "(6.15%). Corrected here."),
+     "distribution yield 4.26% plus pull-to-par. J.P. Morgan 2027 LTCMA puts US IG at "
+     "6.10% (2026: 5.20%), so this sleeve is now 1.1pp below J.P. Morgan rather than 0.2pp "
+     "— the gap to review first. Volatility: regime anchor "
+     "√(25%·3.3%² + 50%·6.1%² + 25%·10.6%²) = 7.02%."),
+    ("Public Equities &amp; Mutual Funds", "7.00% · 16.78%",
+     "Keepp's own figures: MSCI World realised history over 10 years. <b>These are what "
+     "Base runs</b> — the panel previously showed 12.88% · 14.47%, the original "
+     "workbook's numbers, while attributing them to J.P. Morgan; neither half was "
+     "right. For comparison, J.P. Morgan 2027 LTCMA AC World Equity is 7.50% · 17.88% "
+     "(2026: 7.00% · 16.78%)."),
+    ("Private Equity &amp; Venture Capital", "9.80% · 20.31%",
+     "J.P. Morgan 2027 LTCMA, Private Equity (USD), <b>compound</b> return "
+     "(2026: 10.20% · 19.78%). The original workbook used the <i>arithmetic</i> figure "
+     "for the same line — feeding that into a field the model treats as geometric "
+     "double-counts the variance drag. The compound column is used throughout."),
+    ("Diversified Hedge Funds", "6.70% · 5.94%",
+     "J.P. Morgan 2027 LTCMA, diversified hedge funds (USD) — leveraged and net of "
+     "fees (2026: 5.30% · 5.75%, the largest single upgrade in the edition at +1.4pp; "
+     "these are industry medians, and J.P. Morgan is explicit that manager selection "
+     "is vital). Base weight is 0% because the deck's target allocation has no hedge "
+     "fund sleeve — allocate to it in Custom mode."),
+    ("Commodities &amp; Real Assets", "4.80% · 17.97%",
+     "J.P. Morgan 2027 LTCMA, broad commodities basket (USD), <b>compound</b> return "
+     "(2026: 4.60% · 18.32%). As with Private Equity, the original workbook used the "
+     "arithmetic figure. The compound column is used throughout."),
     ("Cash &amp; Equivalents", "3.80% · 0.67%",
      "Return: current USD risk-free rate, 3-month T-bill at 3.80% (15-Jul-2026). "
-     "Volatility: JPM 2026 LTCMA US Cash. Includes the 2% digital-assets sleeve, "
+     "Volatility: JPM 2027 LTCMA US Cash. Includes the 2% digital-assets sleeve, "
      "folded into cash per instruction."),
-    ("Sub-categories", "3 categories · 58 lines",
+    ("Sub-categories", "3 categories · 59 lines",
      "Sleeves are grouped into J.P. Morgan's own three categories — Fixed Income "
-     "(21 lines), Equities (18) and Alternatives (19). Picking a line fills Return "
+     "(21 lines), Equities (18) and Alternatives (20). Picking a line fills Return "
      "and Vol from the <b>compound</b> column; the line also supplies the sleeve's "
-     "row of the correlation matrix."),
-    ("Correlations", "JPM 2026 LTCMA, USD",
-     "<b>The full published 59 × 59 matrix</b>, shipped unmodified as "
+     "row of the correlation matrix. The 2027 edition dropped U.S. Value-Added Real "
+     "Estate and added Global Core Real Estate, so the count is unchanged. It also "
+     "added Americas Core Real Estate, which is U.S. Core Real Estate under a second "
+     "name — same return, same volatility, correlation 1.00 — and is deliberately not "
+     "offered, so no allocation can hold the same real estate twice."),
+    ("Correlations", "JPM 2027 LTCMA, USD",
+     "<b>The full published 60 × 60 matrix</b>, shipped unmodified as "
      "<code>jpm_correlations.csv</code>. The matrix used in any run is a sub-matrix "
      "of it. As published it is not positive semi-definite (smallest eigenvalue "
-     "−0.0161); it is repaired once at load with Higham's nearest-correlation "
-     "algorithm, and no pair moves as much as 0.01."),
+     "−0.0169); it is repaired once at load with Higham's nearest-correlation "
+     "algorithm, and no pair moves as much as 0.01 — the largest single cell moves "
+     "0.0047, slightly less than the 2026 matrix needed."),
     ("Keepp-sourced figures", "Custom mode only",
      "Three lines carried Keepp's own return and volatility rather than "
      "J.P. Morgan's: a global IG blend (5.00% · 7.02%), MSCI World realised "
      "history (7.00% · 16.78%) and the live 3-month T-bill (3.80% · 0.67%). "
-     "<b>Standard mode no longer uses them</b> — every one of its 58 asset "
-     "classes now takes J.P. Morgan's published compound figure, so the whole "
-     "table comes from one source. They remain as the starting numbers in "
-     "<b>Custom</b>, where any figure can be typed over. The two that differ "
-     "from J.P. Morgan are U.S. Inv Grade Corporate Bonds (5.00% vs 5.20%) "
-     "and U.S. Cash (3.80% vs 3.10%); AC World Equity is the same either "
-     "way."),
+     "<b>Standard mode no longer uses them</b> — all 58 of its published "
+     "asset classes take J.P. Morgan's published compound figure, so the "
+     "table comes from one source. The 59th, Digital Assets, is the one "
+     "exception and is marked † wherever it appears; see its own row below. "
+     "They remain as the starting numbers in "
+     "<b>Custom</b>, where any figure can be typed over. On the 2027 edition "
+     "all three differ from J.P. Morgan: U.S. Inv Grade Corporate Bonds "
+     "(5.00% vs 6.10%), U.S. Cash (3.80% vs 3.20%) and AC World Equity "
+     "(7.00% vs 7.50%) — AC World Equity matched on the 2026 edition and no "
+     "longer does."),
+    ("Digital Assets &dagger;", "10.00% · 46.70%",
+     "<b>The one line here that J.P. Morgan does not publish as a row.</b> The "
+     "2027 edition puts a figure on bitcoin for the first time — compound "
+     "<b>10.0%</b>, arithmetic <b>20.9%</b>, volatility <b>55%</b> — and says "
+     "<i>\"we do not yet include bitcoin in our main covariance matrices\"</i>. "
+     "Those three figures do not reconcile under this app\'s convention: "
+     "10.0 + 55²/2 = 25.12%, against their own 20.9%, off by 4.23pp, where the "
+     "worst gap across the 58 published lines is 0.55pp. So the volatility used "
+     "here is the one <b>implied by J.P. Morgan\'s own two return figures</b>, "
+     "√(2 × (20.9 − 10.0)) = <b>46.70%</b>, with their 10.0% compound. That "
+     "trio reproduces their published 20.9% arithmetic exactly. Their 55% is "
+     "not used. <b>Correlations are Gold\'s row</b>, the closest published "
+     "no-cashflow store of value; where both are held the pair is set to 0.99 "
+     "rather than 1.00, which keeps the matrix factorisable. Figures are from "
+     "press coverage of the report and are <b>not yet checked against the "
+     "PDF</b>."),
     ("Method", "Regime-based vol",
      "Returns are entered as geometric per annum and simulated as correlated lognormal "
      "monthly draws, with the portfolio rebalanced to target weights every month. Vol "
@@ -537,7 +570,7 @@ def plain_name(line_label: str):
     """(display name, one-line description) for an LTCMA line label.
 
     The NAME is always J.P. Morgan's own, so the row, the dropdown that added
-    it, the donut and Custom mode all say the same thing — with 58 lines on
+    it, the donut and Custom mode all say the same thing — with 59 lines on
     offer, a row reading "Global stocks" while the picker says "AC World
     Equity" is a worse trade than plainer wording. The plain-English
     description below the name survives for the lines that have one.
@@ -635,7 +668,8 @@ BASE_WEIGHTS = [w for _, _, w, _, _, _ in BASE_SLEEVES]
 def std_numbers(line_name):
     """(compound return %, vol %) Standard mode uses for one LTCMA line.
 
-    J.P. Morgan's published COMPOUND column for all 58 lines, with no
+    J.P. Morgan's published COMPOUND column for all 58 published lines (and
+    the derived figures for Digital Assets, the one house line), with no
     exceptions — the three Keepp overrides that used to sit on top of it went
     with the preset sleeves, so every line in Standard now comes from one
     source and nothing is editable. Never the arithmetic column: engine.py
@@ -706,7 +740,7 @@ def bump_editors():
 
 
 # --------------------------------------------------------------------------
-# Market-assumptions source: J.P. Morgan 2026 LTCMA or BlackRock CMA.
+# Market-assumptions source: J.P. Morgan 2027 LTCMA or BlackRock CMA.
 #
 # Each source keeps its OWN portfolio: the two catalogues have different
 # lines, and correlations only exist inside one provider's matrix, so a
@@ -761,7 +795,6 @@ if _prev_src is not None and _prev_src != st.session_state.cma_source:
         st.session_state.pop(_k, None)
     st.session_state.update(_stash.get(st.session_state.cma_source, {}))
     st.session_state.pop("opt_result", None)
-    st.session_state.pop("_last_digest", None)
     bump_editors()
 st.session_state._active_src = st.session_state.cma_source
 
@@ -802,18 +835,35 @@ def apply_restore(stored):
                       rec.years)
     if is_std:
         held = [rsrc.resolve(s["LTCMA line"]) for s in rec.sleeves]
+        saved_w = {rsrc.resolve(s["LTCMA line"]): float(s["Weight %"])
+                   for s in rec.sleeves}
         extra = [ln for ln in stored.pool if ln not in held]
+        # A saved run can name a line the active catalogue no longer has: an
+        # LTCMA edition retires one (U.S. Value-Added Real Estate went in the
+        # 2027 edition), or the run was saved under the other provider. Custom
+        # mode already survives that — sync_group rule 1 falls the row back to
+        # its category default — but Standard mode looks the line up directly
+        # and would raise KeyError, losing the whole restore. Drop what the
+        # catalogue does not know, keep the rest, and say what went.
+        gone = list(dict.fromkeys(ln for ln in held + extra
+                                  if ln not in rsrc.BY_NAME))
+        if gone:
+            held = [ln for ln in held if ln not in gone]
+            extra = [ln for ln in extra if ln not in gone]
+            lost = sum(saved_w.get(ln, 0.0) for ln in gone)
+            st.toast(f"{', '.join(gone)} is no longer in the catalogue and was "
+                     f"dropped from this run"
+                     + (f" — {lost:g}% of the allocation. Re-weight before "
+                        f"reading the result." if lost else "."),
+                     icon=":material/warning:")
         st.session_state.std_lines = held + extra
-        st.session_state.std_w = {rsrc.resolve(s["LTCMA line"]): float(s["Weight %"])
-                                  for s in rec.sleeves}
+        st.session_state.std_w = {ln: saved_w[ln] for ln in held}
         st.session_state.std_w.update({ln: 0.0 for ln in extra})
         st.session_state.std_tick = {ln: True for ln in held + extra}
     else:
         st.session_state.custom_alloc = pd.DataFrame(
             rec.sleeves, columns=rs.ALLOC_COLS)
         st.session_state.pop("custom_bases", None)
-    # The restored run's inputs are already saved; don't try to save them again.
-    st.session_state._last_digest = stored.digest
     # MUST bump — the editors would otherwise re-apply stale hand edits on top
     # of the restored values (see bump_editors()).
     bump_editors()
@@ -827,7 +877,7 @@ if "pending_restore" in st.session_state:
 IS_BR = st.session_state.cma_source == BR_KEY
 SRC_SHORT = brc.SHORT if IS_BR else "J.P. Morgan"
 SRC_NAME = (f"{brc.NAME} · {brc.SCENARIOS[st.session_state.br_scenario]}"
-            if IS_BR else "J.P. Morgan 2026 LTCMA")
+            if IS_BR else "J.P. Morgan 2027 LTCMA")
 SRC_ID = source_id_of(st.session_state.cma_source, st.session_state.br_scenario)
 N_LINES = len(SRC.LINES)
 
@@ -836,7 +886,7 @@ BR_SOURCES = [
     ("Publisher", f"BlackRock · {brc.EDITION}",
      f"BlackRock Capital Market Assumptions, {brc.EDITION} edition, data as of "
      f"{brc.AS_OF}. US-dollar figures, gross of fees, for passive index "
-     f"exposure. {len(brc.NAMES)} asset classes; the Global 60/40 portfolio row "
+     f"exposure. {N_LINES} asset classes; the Global 60/40 portfolio row "
      f"is a portfolio, not an asset class, and is left out. BlackRock updates "
      f"the workbook every quarter."),
     ("Returns", "Geometric · by horizon",
@@ -852,6 +902,19 @@ BR_SOURCES = [
     ("Volatility", "As published",
      "BlackRock's annual volatility per asset class. US cash is published at "
      "0%; the optimizer floors it at a tiny positive value."),
+    ("Real assets &amp; digital", "J.P. Morgan · Custom only",
+     "BlackRock's CMA has <b>no commodities, gold or digital-asset line</b>, so "
+     "a BlackRock portfolio could not hold a real-asset sleeve at all. Three "
+     "J.P. Morgan lines are offered instead — Commodities, Gold and Digital "
+     "Assets — in <b>Custom mode only</b>, so Standard stays a pure BlackRock "
+     "catalogue. Their correlations are not a compromise: BlackRock's matrix is "
+     "already built on J.P. Morgan's published correlations, so these three sit "
+     "in the same construction as every other line. Their <b>returns and "
+     "volatilities are J.P. Morgan's</b>, which has two consequences worth "
+     "knowing: they <b>do not move when you change the scenario</b>, and they "
+     "<b>do not move with the horizon</b> — BlackRock reprices its own assets "
+     "across scenarios and publishes a figure per horizon; J.P. Morgan "
+     "publishes one number."),
     ("Correlations", "BlackRock + J.P. Morgan",
      "BlackRock publishes each asset's correlation to government bonds and to "
      "equities only, not a full matrix. Those two numbers set the common part "
@@ -908,7 +971,7 @@ with st.sidebar:
         "Assumptions from", [JPM_KEY, BR_KEY], key="cma_source",
         selection_mode="single", required=True, width="stretch",
         format_func=lambda k: ("J.P. Morgan" if k == JPM_KEY else "BlackRock"),
-        help="J.P. Morgan 2026 Long-Term Capital Market Assumptions (58 asset "
+        help="J.P. Morgan 2027 Long-Term Capital Market Assumptions (59 asset "
              "classes, one long-term return each), or BlackRock's Capital "
              "Market Assumptions, August 2026 (34 asset classes, returns by "
              "horizon). Each keeps its own portfolio; switching back brings "
@@ -995,16 +1058,23 @@ REGION_COLOR = {"US": "#2a78d6", "Europe": "#1baf7a", "Asia": "#eb6834",
 
 
 def geo_limits_current() -> pd.DataFrame:
-    """The geography-limits table as currently edited. The editor lives on
-    Improve the mix, which renders after Your mix, so its pending edits are
-    applied here from the widget state to keep the warning on Your mix current."""
-    base = st.session_state.get("geo_base")
+    """The geography-limits table as currently edited."""
+    return _limits_current(
+        "geo_base", "geo_limits",
+        lambda: pd.DataFrame([{"Region": r, **{c: np.nan for c in GEO_COLS[1:]}}
+                              for r in geo.REGIONS], columns=GEO_COLS))
+
+
+def _limits_current(base_key, widget_key, seed) -> pd.DataFrame:
+    """A fixed-row limits table as currently edited. The editors live on
+    Improve the mix, which renders after Your mix, so their pending edits are
+    applied here from the widget state to keep the warnings on Your mix current."""
+    base = st.session_state.get(base_key)
     if base is None:
-        base = pd.DataFrame([{"Region": r, **{c: np.nan for c in GEO_COLS[1:]}}
-                             for r in geo.REGIONS], columns=GEO_COLS)
-        st.session_state.geo_base = base
+        base = seed()
+        st.session_state[base_key] = base
     df = base.copy()
-    edits = st.session_state.get("geo_limits")
+    edits = st.session_state.get(widget_key)
     if edits:
         try:
             rows = edits.get("edited_rows", {}) if hasattr(edits, "get") \
@@ -1051,14 +1121,15 @@ def region_panel(alloc_df, key):
         width="stretch")
     tbl = (bd.reset_index().rename(columns={"index": "Region", "Alternatives": "Alts"})
            [["Region", "Total", "Stocks", "Bonds", "Alts"]])
-    st.dataframe(tbl, hide_index=True, width="stretch", key=f"geo_tbl_{key}",
-                 column_config={c: st.column_config.NumberColumn(format="%.1f%%")
-                                for c in ["Total", "Stocks", "Bonds", "Alts"]})
-    st.caption("Broad indices such as AC World, EAFE and World government bonds "
-               "are split by fixed regional weights from their index providers. "
-               "Global = other countries, emerging markets, and assets with no "
-               "single region (commodities, gold, hedge funds, global private "
-               "markets).")
+    with st.expander("Region by asset type"):
+        st.dataframe(tbl, hide_index=True, width="stretch", key=f"geo_tbl_{key}",
+                     column_config={c: st.column_config.NumberColumn(format="%.1f%%")
+                                    for c in ["Total", "Stocks", "Bonds", "Alts"]})
+        st.caption("Broad indices such as AC World, EAFE and World government "
+                   "bonds are split by fixed regional weights from their index "
+                   "providers. Global = other countries, emerging markets, and "
+                   "assets with no single region (commodities, gold, hedge "
+                   "funds, global private markets).")
     bad = geo.check(geo.exposure_rows(SRC, lines, cats, geo_limits_current()),
                     list(w / 100.0))
     if bad:
@@ -1068,9 +1139,568 @@ def region_panel(alloc_df, key):
                    icon=":material/public:")
 
 
+# --------------------------------------------------------------------------
+# Liquidity — tier ladder and the optimizer's liquidity limits
+# (keepp_mc/liquidity.py). Same pattern as geography: a label only.
+# --------------------------------------------------------------------------
+LIQ_COLS = ["Tiers", "Min %", "Max %"]
+# Ordinal: one teal ramp, darkest = most liquid.
+TIER_COLOR = dict(zip(liq.TIERS, ["#00544B", "#00877A", "#4FAE9F",
+                                  "#93CEC4", "#C9E6E1"]))
+TIER_NAME = {t: f"{t} · {liq.LABEL[t]}" for t in liq.TIERS}
+
+
+def liq_limits_current() -> pd.DataFrame:
+    """The liquidity-limits table as currently edited."""
+    return _limits_current(
+        "liq_base", "liq_limits",
+        lambda: pd.DataFrame([{"Tiers": g, "Min %": np.nan, "Max %": np.nan}
+                              for g in liq.GROUPS], columns=LIQ_COLS))
+
+
+def liq_overrides() -> dict:
+    """Personal-line tier / haircut overrides from Custom mode, in the shape
+    liquidity.py takes (haircut in decimals)."""
+    return {n: {"tier": o.get("tier"),
+                "haircut": (None if o.get("haircut_pct") is None
+                            or pd.isna(o.get("haircut_pct"))
+                            else float(o["haircut_pct"]) / 100.0)}
+            for n, o in st.session_state.get("pl_liq", {}).items()}
+
+
+def fmt_days(d) -> str:
+    if d < 14:
+        return f"{d:.0f} day{'s' if round(d) != 1 else ''}"
+    if d < 60:
+        return f"{d / 7:.0f} weeks"
+    if d < 730:
+        return f"{d / 30.4:.0f} months"
+    return f"{d / 365:.1f} years"
+
+
+def liquidity_panel(alloc_df, key, table=False):
+    """Liquidity ladder (stacked bar) + plain sentence for an allocation
+    frame; with `table`, the tier x asset-type table and the limits warning."""
+    if alloc_df is None or len(alloc_df) == 0:
+        return
+    w = pd.to_numeric(alloc_df["Weight %"], errors="coerce").fillna(0.0)
+    if float(w.sum()) <= 0:
+        return
+    lines, cats = list(alloc_df["LTCMA line"]), list(alloc_df["Category"])
+    ov = liq_overrides()
+    bd = liq.breakdown(SRC, lines, cats, list(w), ov)
+    days = liq.days_to_cash(SRC, lines, list(w), ov)
+    section("How quickly it can become cash",
+            liq.ladder_sentence(bd["Total"]) + f" Weighted-average time to "
+            f"cash ≈ <b>{fmt_days(days)}</b>.")
+    bar = pd.DataFrame({"Tier": [TIER_NAME[t] for t in liq.TIERS],
+                        "pct": bd["Total"].values,
+                        "when": [liq.TIME_TO_CASH[t] for t in liq.TIERS],
+                        "x": ["Portfolio"] * len(liq.TIERS)})
+    bar["lbl"] = bar["pct"].map(lambda v: f"{v:.1f}%")
+    bar = bar[bar["pct"] > 0.005]
+    names = [TIER_NAME[t] for t in liq.TIERS]
+    st.altair_chart(
+        alt.Chart(bar).mark_bar(height=26, stroke="white", strokeWidth=1).encode(
+            x=alt.X("sum(pct):Q", stack="zero", title=None,
+                    axis=alt.Axis(format=".0f", labelExpr="datum.label + '%'",
+                                  labelColor=INK_3, gridColor=GRID,
+                                  domain=False, ticks=False)),
+            y=alt.Y("x:N", title=None, axis=None),
+            color=alt.Color("Tier:N", sort=names,
+                            scale=alt.Scale(domain=names,
+                                            range=[TIER_COLOR[t] for t in liq.TIERS]),
+                            legend=alt.Legend(orient="bottom", title=None,
+                                              labelColor=INK_2, columns=3)),
+            order=alt.Order("order:Q"),
+            tooltip=[alt.Tooltip("Tier:N"), alt.Tooltip("lbl:N", title="Share"),
+                     alt.Tooltip("when:N", title="Time to cash")])
+        .transform_calculate(order=f"indexof({names}, datum.Tier)")
+        .properties(height=92).configure_view(strokeWidth=0),
+        width="stretch")
+    if not table:
+        return
+    tbl = (bd.rename(columns={"Alternatives": "Alts"})
+           .assign(Tier=[TIER_NAME[t] for t in liq.TIERS],
+                   **{"Time to cash": [liq.TIME_TO_CASH[t] for t in liq.TIERS]})
+           [["Tier", "Total", "Stocks", "Bonds", "Alts", "Time to cash"]])
+    with st.expander("Liquidity tier by asset type"):
+        st.dataframe(tbl, hide_index=True, width="stretch", key=f"liq_tbl_{key}",
+                     column_config={c: st.column_config.NumberColumn(format="%.1f%%")
+                                    for c in ["Total", "Stocks", "Bonds", "Alts"]})
+        st.caption("Each cell is the share of the whole portfolio held in that "
+                   "tier through that asset type; Total is the row sum. Each "
+                   "asset class sits in one liquidity tier (a few are split, "
+                   "e.g. macro hedge funds half L3, half L4). Time to cash "
+                   "assumes an orderly sale; in a crisis, selling early costs a "
+                   "haircut — up to 15% for L2, 30% for L3, 40% for L4 and 60% "
+                   "for L5, from secondary-market pricing (Jefferies, Lazard, "
+                   "2026).")
+    bad = liq.check(liq.exposure_rows(SRC, lines, liq_limits_current(), ov),
+                    list(w / 100.0))
+    if bad:
+        st.warning("**Outside your liquidity limits** (set on *Improve the mix*): "
+                   + "; ".join(f"{n} {v*100:.1f}% (limit {lo*100:.0f}–{hi*100:.0f}%)"
+                               for n, v, lo, hi in bad),
+                   icon=":material/water_drop:")
+
+
 # ==========================================================================
 # TAB — Your mix (runs first: everything else depends on the allocation)
 # ==========================================================================
+# --------------------------------------------------------------------------
+# Custom mode — Your mix is a two-view builder. Each holding gets a share and
+# Keepp's own return and volatility (both start at the provider's figures:
+# J.P. Morgan 2027, or BlackRock for the chosen scenario and horizon); the
+# same portfolio is then simulated on Keepp's figures AND on the provider's,
+# side by side, and Save stores both.
+#
+# Keepp's figures ARE Custom mode's Return % / Vol %: the builder reads and
+# writes st.session_state.custom_alloc, so Overview, Improve the mix,
+# restores and "Apply as Custom sleeves" all keep working unchanged and show
+# the Keepp view. Logic lives in keepp_mc/compare.py; this is layout only.
+# The provider is whatever the sidebar selects (SRC): a BlackRock portfolio
+# is built from BlackRock lines and compared against BlackRock.
+# --------------------------------------------------------------------------
+KEEPP_C, JPM_C = ACCENT, DEEP_BLUE
+# Provider labels for the comparison: short name in tables, title on cards.
+PROV = SRC_SHORT
+PROV_TITLE = (f"BlackRock · {brc.SCENARIOS[st.session_state.br_scenario]}"
+              if IS_BR else "J.P. Morgan 2027")
+
+
+def cmp_diff(kind, d):
+    """Signed difference, Keepp minus the provider, with a neutral more/less
+    colour — a higher assumption is not 'better', only more optimistic."""
+    if abs(d) < (0.5 if kind == "money" else 5e-5):
+        return f'<span style="color:{INK_3}">— same</span>'
+    colr, arrow = (UP_COLOR, "▲") if d > 0 else (DOWN_COLOR, "▼")
+    txt = (("+" if d > 0 else "") + money(d) if kind == "money"
+           else f"{d * 100:+.2f} pp".replace("-", "−"))
+    return f'<span style="color:{colr};font-weight:650">{arrow} {txt}</span>'
+
+
+def cmp_chart(fl, amount, height=400):
+    """Both fans on one set of axes: 5–95 and 25–75 bands, typical path."""
+    fl = fl.copy()
+    for c in ("p05", "p50", "p95"):
+        fl[c + "_l"] = fl[c].map(money)
+    cs = alt.Scale(domain=["Keepp", PROV], range=[KEEPP_C, JPM_C])
+    ax_y = alt.Axis(title=None, format="$.3~s", labelColor=INK_3, gridColor=GRID,
+                    domain=False, ticks=False, tickCount=6, labelFontSize=12,
+                    labelPadding=8)
+    ax_x = alt.Axis(title="Years from today", titleColor=INK_3, labelColor=INK_3,
+                    grid=False, tickMinStep=1, format="d", labelFontSize=12,
+                    domainColor=GRID, tickColor=GRID, titleFontWeight=400)
+    xs = alt.Scale(domain=[0, float(fl["Year"].max())], nice=False)
+    ys = alt.Scale(zero=False, nice=True)
+    b = alt.Chart(fl)
+    col = alt.Color("View:N", scale=cs, legend=None)
+    # One light 9-in-10 band per view; the two overlap, so no inner band —
+    # four stacked translucent areas turned into an unreadable wash.
+    outer = b.mark_area(opacity=.09).encode(
+        x=alt.X("Year:Q", axis=ax_x, scale=xs),
+        y=alt.Y("p05:Q", axis=ax_y, scale=ys), y2="p95:Q", color=col)
+    edges = b.transform_fold(["p05", "p95"], as_=["k", "v"]).mark_line(
+        strokeWidth=1.4, strokeDash=[5, 4], opacity=.9).encode(
+        x="Year:Q", y=alt.Y("v:Q", scale=ys), color=col,
+        detail="k:N")
+    med = b.mark_line(strokeWidth=2.8).encode(
+        x="Year:Q", y=alt.Y("p50:Q", scale=ys), color=col)
+    start = alt.Chart(pd.DataFrame({"y": [amount]})).mark_rule(
+        color=INK_3, strokeDash=[4, 4], opacity=.8).encode(y="y:Q")
+
+    wide = fl.pivot_table(index="Year", columns="View",
+                          values=["p05", "p50", "p95"]).reset_index()
+    wide.columns = ["Year"] + [f"{v}|{p}" for p, v in wide.columns[1:]]
+    for c in wide.columns[1:]:
+        wide[c + "_l"] = wide[c].map(money)
+    wide["yr_l"] = wide["Year"].map(lambda y: f"Year {y:g}")
+    hover = alt.selection_point(fields=["Year"], nearest=True, on="pointerover",
+                                empty=False, clear="pointerout")
+    rule = alt.Chart(wide).mark_rule(color=INK_3, strokeWidth=1).encode(
+        x="Year:Q",
+        opacity=alt.condition(hover, alt.value(.6), alt.value(0)),
+        tooltip=[alt.Tooltip("yr_l:N", title="When"),
+                 alt.Tooltip("Keepp|p50_l:N", title="Keepp · typical"),
+                 alt.Tooltip(f"{PROV}|p50_l:N", title=f"{PROV} · typical"),
+                 alt.Tooltip("Keepp|p05_l:N", title="Keepp · weak markets"),
+                 alt.Tooltip(f"{PROV}|p05_l:N", title=f"{PROV} · weak markets"),
+                 alt.Tooltip("Keepp|p95_l:N", title="Keepp · strong markets"),
+                 alt.Tooltip(f"{PROV}|p95_l:N",
+                             title=f"{PROV} · strong markets")],
+    ).add_params(hover)
+    dots = b.mark_circle(size=70, stroke="white", strokeWidth=2).encode(
+        x="Year:Q", y=alt.Y("p50:Q", scale=ys), color=col,
+        opacity=alt.condition(hover, alt.value(1), alt.value(0)))
+
+    end = fl[fl["Year"] == fl["Year"].max()]
+    tags = alt.Chart(end).mark_text(align="left", dx=8, fontSize=13,
+                                    fontWeight=700).encode(
+        x="Year:Q", y=alt.Y("p50:Q", scale=ys), text="p50_l:N", color=col)
+    return (outer + edges + start + med + rule + dots + tags).properties(
+        height=height, padding={"left": 4, "right": 74, "top": 10, "bottom": 4}
+    ).configure_view(strokeWidth=0)
+
+
+def cmp_css():
+    st.markdown(f"""<style>
+      table.cmpt {{ width:100%; border-collapse:collapse; font-size:.92rem;
+                   font-variant-numeric:tabular-nums; }}
+      table.cmpt th {{ text-align:right; font-size:.78rem; font-weight:600;
+                      color:{INK_3}; padding:8px 10px;
+                      border-bottom:1px solid {GRID}; }}
+      table.cmpt th:first-child, table.cmpt td:first-child {{ text-align:left; }}
+      table.cmpt td {{ text-align:right; padding:9px 10px;
+                      border-bottom:1px solid #EEF2F1; }}
+      table.cmpt td.k {{ color:{ACCENT_DK}; font-weight:650; }}
+      table.cmpt td.j {{ color:{DEEP_BLUE}; font-weight:650; }}
+      .cmphead {{ border-radius:14px; padding:18px 22px; background:#fff;
+                 border:1px solid {GRID}; border-top:5px solid var(--c); }}
+      .cmphead .t {{ font-size:.8rem; font-weight:650; letter-spacing:.06em;
+                    text-transform:uppercase; color:var(--c); }}
+      .cmphead .v {{ font-size:2.3rem; font-weight:700; color:{INK};
+                    line-height:1.15; margin:.25rem 0 .2rem;
+                    font-variant-numeric:tabular-nums; }}
+      .cmphead .s {{ color:{INK_2}; font-size:.88rem; line-height:1.5; }}
+      .cmphdr {{ color:{INK_3}; font-size:.74rem; font-weight:600; }}
+    </style>""", unsafe_allow_html=True)
+
+
+
+def personal_liquidity_editor(alloc):
+    # Liquidity of Keepp's personal lines: L5 by default, tier and
+    # crisis haircut editable here (keepp_mc/liquidity.py). The base
+    # frame is rebuilt only when the set of personal lines changes,
+    # and the widget key changes with it, so edits never snap back.
+    held_pl = [n for n in pl.NAMES
+               if n in set(alloc["LTCMA line"].astype(str).str.strip())]
+    if held_pl:
+        prev = st.session_state.get("pl_liq", {})
+        base = st.session_state.get("pl_liq_base")
+        if base is None or list(base["Investment"]) != held_pl:
+            base = pd.DataFrame([{
+                "Investment": n,
+                "Tier": TIER_NAME[prev.get(n, {}).get("tier")
+                                  or liq.PERSONAL_DEFAULT],
+                "Crisis haircut %": prev.get(n, {}).get("haircut_pct",
+                                                        np.nan)}
+                for n in held_pl])
+            st.session_state.pl_liq_base = base
+        st.markdown(
+            '<div style="font-weight:650;margin:1rem 0 .15rem">'
+            'Liquidity of your personal lines</div>'
+            '<div class="muted" style="margin-bottom:.3rem">Locked (L5) '
+            'unless you say otherwise. Leave the haircut blank to use the '
+            'tier\'s default.</div>', unsafe_allow_html=True)
+        pl_ed = st.data_editor(
+            base, key=f"pl_liq_{'_'.join(held_pl)}", hide_index=True,
+            width='stretch', num_rows="fixed", disabled=["Investment"],
+            column_config={
+                "Investment": st.column_config.TextColumn(width="medium"),
+                "Tier": st.column_config.SelectboxColumn(
+                    "Liquidity tier", options=list(TIER_NAME.values()),
+                    required=True),
+                "Crisis haircut %": st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.5,
+                    format="%.1f",
+                    help="Discount to value if it had to be sold in a "
+                         "crisis. Blank = the tier's midpoint ("
+                         + ", ".join(f"{t} {liq.HAIRCUT[t]*100:g}%"
+                                     for t in liq.TIERS) + ")."),
+            })
+        st.session_state.pl_liq = {
+            r["Investment"]: {"tier": str(r["Tier"]).split(" · ")[0],
+                              "haircut_pct": r["Crisis haircut %"]}
+            for _, r in pl_ed.iterrows()}
+
+
+def custom_builder():
+    """Custom mode: pick the provider's lines, type share, Keepp return and
+    Keepp vol. Returns the allocation table (Keepp figures)."""
+    cmp_css()
+    section("What's in your portfolio",
+            "Open an asset class and pick an investment from its dropdown. Type "
+            "its <b>share</b>, then <b>Keepp's expected return</b> — and "
+            f"volatility, if Keepp's view differs. Both start at {SRC_NAME}'s "
+            "figures, so anything left alone is identical in both views. "
+            "Below, the same portfolio is simulated on Keepp's figures and on "
+            f"{PROV}'s, side by side."
+            + (f" BlackRock's returns are for {SRC.HORIZON_NOTE}." if IS_BR
+               else ""))
+    store = st.session_state.custom_alloc
+    frame = cmpm.frame_from_alloc(store, SRC)
+    # BlackRock reprices with the scenario and the horizon. A Keepp figure
+    # nobody typed (still equal to the provider's figure last run) follows
+    # the provider to its new value; a typed one stays. Without this an
+    # untouched row would freeze at the old figure and show a "Keepp view"
+    # that no one entered.
+    # (provider family, scenario id, years): only a scenario or horizon
+    # change WITHIN one provider re-bases; switching provider swaps portfolios.
+    prov_key = (st.session_state.cma_source, SRC_ID,
+                int(st.session_state.years))
+    prev = st.session_state.get("_cmp_prov")
+    if prev is not None and prev[0] != prov_key and prev[0][0] == prov_key[0] and len(frame):
+        old_fig = prev[1]
+        moved = False
+        for i, row in frame.iterrows():
+            o = old_fig.get(row["Line"])
+            if o is None:
+                continue
+            if abs(row["Keepp return %"] - o[0]) < 1e-9:
+                frame.at[i, "Keepp return %"] = row["Provider return %"]
+                moved = moved or abs(o[0] - row["Provider return %"]) > 1e-9
+            if abs(row["Keepp vol %"] - o[1]) < 1e-9:
+                frame.at[i, "Keepp vol %"] = row["Provider vol %"]
+                moved = moved or abs(o[1] - row["Provider vol %"]) > 1e-9
+        if moved:
+            st.session_state.custom_alloc = cmpm.to_alloc(frame, "keepp", SRC)
+            st.session_state._cmp_prov = (prov_key, dict(zip(
+                frame["Line"], zip(frame["Provider return %"],
+                                   frame["Provider vol %"]))))
+            bump_editors()
+            st.rerun()
+    st.session_state._cmp_prov = (prov_key, dict(zip(
+        frame["Line"], zip(frame["Provider return %"], frame["Provider vol %"]))))
+    dropped = len(store) - len(frame)
+    if dropped > 0:
+        st.caption(f"{dropped} row(s) were not {PROV} lines (or were "
+                   f"listed twice) and were merged or left out.")
+    lines = list(frame["Line"])
+    W = dict(zip(frame["Line"], frame["Weight %"]))
+    R = dict(zip(frame["Line"], frame["Keepp return %"]))
+    V = dict(zip(frame["Line"], frame["Keepp vol %"]))
+    live_w = {ln: float(st.session_state.get(f"kw_{ln}_{NONCE}", W[ln]) or 0)
+              for ln in lines}
+
+    new_w, new_r, new_v, remove, add_line = {}, {}, {}, None, None
+    for key in cmpm.CATEGORY_KEYS:
+        cat = cmpm.CATEGORY_NAME[key]
+        mine = [ln for ln in lines if cmpm.category_of(ln, SRC) == key]
+        opts = cmpm.choices(key, SRC)
+        c_sum = sum(live_w[ln] for ln in mine)
+        label = (f"{CATEGORY_PLAIN.get(cat, cat)}  ·  nothing added  ·  "
+                 f"{len(opts)} to choose from" if not mine else
+                 f"{CATEGORY_PLAIN.get(cat, cat)}  ·  {c_sum:.1f}%  ·  "
+                 f"{len(mine)} listed")
+        with st.expander(label, expanded=bool(mine) or not lines):
+            with st.container():
+                if mine:
+                    h = st.columns([1.75, .8, .95, .95, .26])
+                    for c, t in zip(h, ("Investment", "Share %",
+                                        "Keepp return %", "Keepp vol %", "")):
+                        c.markdown(f'<div class="cmphdr">{t}</div>',
+                                   unsafe_allow_html=True)
+                for ln in mine:
+                    jr, jv = cmpm.provider_figures(ln, SRC)
+                    via = cmpm.provider_reference(ln, SRC)
+                    c1, c2, c3, c4, c5 = st.columns(
+                        [1.75, .8, .95, .95, .26], vertical_alignment="center")
+                    c1.markdown(
+                        f'<div style="font-weight:650;font-size:.93rem">'
+                        f'{cmpm.label_of(ln, SRC)}</div><div class="d2" '
+                        f'style="margin-left:0">{PROV}: {jr:.2f}% · '
+                        f'vol {jv:.2f}%'
+                        + (f' <i>(via {via})</i>' if via != ln else "")
+                        + '</div>', unsafe_allow_html=True)
+                    wv = c2.number_input(
+                        f"Share of {ln}", 0.0, 100.0, value=float(W[ln]),
+                        step=0.5, format="%.2f", key=f"kw_{ln}_{NONCE}",
+                        label_visibility="collapsed")
+                    rv = c3.number_input(
+                        f"Keepp return for {ln}", -20.0, 60.0,
+                        value=float(R[ln]), step=0.1, format="%.2f",
+                        key=f"kr_{ln}_{NONCE}", label_visibility="collapsed",
+                        help=f"Compound return per year. {PROV}: {jr:.2f}%.")
+                    vv = c4.number_input(
+                        f"Keepp vol for {ln}", 0.0, 100.0, value=float(V[ln]),
+                        step=0.1, format="%.2f", key=f"kv_{ln}_{NONCE}",
+                        label_visibility="collapsed",
+                        help=f"Yearly volatility. {PROV}: {jv:.2f}%.")
+                    if c5.button("✕", key=f"krm_{ln}_{NONCE}",
+                                 help="Take this asset off the list"):
+                        remove = ln
+                    new_w[ln], new_r[ln], new_v[ln] = (float(wv or 0),
+                                                       float(rv), float(vv))
+            rest = [o for o in opts if cmpm.resolve(o, SRC) not in mine]
+            pick = st.selectbox(
+                f"Add from {cat}", ["— add an asset —"] + rest,
+                key=f"kadd_{key}_{NONCE}", label_visibility="collapsed",
+                help=f"{SRC_NAME} {cat} lines"
+                     + (", plus Keepp's personal private-markets lines"
+                        if key == pl.CATEGORY else "")
+                     + f". It arrives at 0% on {PROV}'s figures.")
+            if pick != "— add an asset —":
+                add_line = cmpm.resolve(pick, SRC)
+
+    if remove is not None:
+        lines = [x for x in lines if x != remove]
+    if add_line is not None and add_line not in lines:
+        lines = lines + [add_line]
+        new_w[add_line] = 0.0
+        new_r[add_line], new_v[add_line] = cmpm.provider_figures(add_line, SRC)
+    alloc = cmpm.to_alloc(cmpm.build_frame(lines, new_w, new_r, new_v, SRC),
+                          "keepp", SRC)
+    st.session_state.custom_alloc = alloc
+    if remove is not None or add_line is not None:
+        bump_editors()
+        st.rerun()
+    if not lines:
+        st.info("**No assets yet.** Open an asset class above and pick one "
+                "from its dropdown to start building the portfolio.",
+                icon=":material/add_circle:")
+
+    personal_liquidity_editor(alloc)
+
+    st.write("")
+    b1, b2, b3 = st.columns([1.3, 1.3, 0.9])
+    if lines and b1.button(f"↺ Keepp figures = {PROV}", key="k_eq_jpm",
+                           help=f"Put every Keepp return and vol back to "
+                                f"{PROV}'s, keeping the shares."):
+        st.session_state.custom_alloc = cmpm.to_alloc(
+            cmpm.build_frame(lines, new_w, {}, {}, SRC), "keepp", SRC)
+        bump_editors()
+        st.rerun()
+    if not IS_BR and b2.button("↺ Reset to J.P. Morgan defaults",
+                               key="k_reset",
+                               help="Back to Keepp's deck sleeves."):
+        st.session_state.custom_alloc = custom_alloc_seed()
+        bump_editors()
+        st.rerun()
+    if lines and b3.button("Clear all assets", key="k_clear"):
+        st.session_state.custom_alloc = custom_alloc_seed().iloc[0:0]
+        bump_editors()
+        st.rerun()
+    return alloc
+
+
+def render_comparison(frame):
+    """Keepp vs provider results for a 100% portfolio. Returns the two
+    engine Results (Keepp, provider) so Save can store both."""
+    # ---- the two runs: same weights, correlations, seed and paths --------
+    with st.spinner("Simulating both views…"):
+        wk, rk, vk, ck = cmpm.sim_inputs(frame, "keepp", SRC)
+        wj, rj, vj, cj = cmpm.sim_inputs(frame, "provider", SRC)
+        res_k, rep_k = run_sim(wk, rk, vk, ck, int(paths), int(years), int(seed))
+        res_j, rep_j = run_sim(wj, rj, vj, cj, int(paths), int(years), int(seed))
+    if rep_k or rep_j:
+        st.warning("The correlation sub-matrix needed a numerical repair "
+                   "before simulating — worth reporting if you see it.")
+    hk, hj = cmpm.headline(res_k, amount), cmpm.headline(res_j, amount)
+    T_c = res_k.rows[-1]["_years"]
+
+    st.divider()
+    section(f"In {T_c} years, {money(amount)} could be worth about",
+            "The typical outcome under each set of assumptions — half of the "
+            "simulated futures end higher, half lower.")
+    a1, a2 = st.columns(2, gap="medium")
+    for col, colr, title, h in ((a1, KEEPP_C, "Keepp assumptions", hk),
+                                (a2, JPM_C, PROV_TITLE, hj)):
+        col.markdown(
+            f'<div class="cmphead" style="--c:{colr}"><div class="t">{title}'
+            f'</div><div class="v">{money(h["Typical value"])}</div>'
+            f'<div class="s"><b>{pct(h["Typical return / yr"], 2)}</b> a year '
+            f'typical · volatility <b>{pct(h["Volatility"], 2)}</b><br>9 in 10 '
+            f'futures end between <b>{money(h["Weak markets (1 in 20)"])}</b> '
+            f'and <b>{money(h["Strong markets (1 in 20)"])}</b>.</div></div>',
+            unsafe_allow_html=True)
+    d_val = hk["Typical value"] - hj["Typical value"]
+    st.markdown(
+        f'<div class="muted" style="margin-top:.6rem">Keepp\'s assumptions put '
+        f'the typical outcome {cmp_diff("money", d_val)} '
+        f'({cmp_diff("pct", hk["Typical return / yr"] - hj["Typical return / yr"])}'
+        f' a year) against {PROV}\'s.</div>', unsafe_allow_html=True)
+
+    section("Side by side")
+    rows = []
+    for k in hk:
+        kind = "money" if k in cmpm.MONEY_ROWS else "pct"
+        f = money if kind == "money" else (lambda x: pct(x, 2))
+        rows.append(f'<tr><td>{k}</td><td class="k">{f(hk[k])}</td>'
+                    f'<td class="j">{f(hj[k])}</td>'
+                    f'<td>{cmp_diff(kind, hk[k] - hj[k])}</td></tr>')
+    st.markdown(
+        '<table class="cmpt"><tr><th>After '
+        f'{T_c} years</th><th>Keepp</th><th>{PROV}</th><th>Difference'
+        '</th></tr>' + "".join(rows) + '</table>', unsafe_allow_html=True)
+    st.caption(f"Difference = Keepp minus {PROV}. ▲/▼ say which way, not "
+               "which is better. pp = percentage points.")
+
+    section("How the two paths compare, year by year",
+            "Solid line: the typical path. Dashed lines and shading: the range "
+            "9 in 10 futures fall within (weak to strong markets). Hover to read "
+            "any year.")
+    st.altair_chart(cmp_chart(cmpm.fan_long(res_k, res_j, amount), amount),
+                    width="stretch")
+    st.markdown(
+        f'<div class="keys">'
+        f'<span><i style="background:{KEEPP_C};height:3px"></i>Keepp</span>'
+        f'<span><i style="background:{JPM_C};height:3px"></i>{PROV}</span>'
+        f'<span><i style="border-top:2px dashed {INK_2};height:0"></i>'
+        f'Weak / strong markets (1 in 20)</span>'
+        f'<span><i style="border-top:2px dashed {INK_3};height:0"></i>'
+        f'What you put in</span></div>', unsafe_allow_html=True)
+
+    section("Where the views differ",
+            "Each holding's figures under both sets of assumptions. "
+            "<i>Return effect</i> is share × return difference: how much "
+            "that holding moves the portfolio's average return.")
+    att = cmpm.attribution(frame)
+    show = pd.DataFrame({
+        "Investment": att["Line"].map(lambda n: cmpm.label_of(n, SRC)),
+        "Share %": att["Weight %"],
+        f"{PROV} return %": att["Provider return %"],
+        "Keepp return %": att["Keepp return %"],
+        f"{PROV} vol %": att["Provider vol %"],
+        "Keepp vol %": att["Keepp vol %"],
+        "Return effect pp": att["Return effect pp"],
+    })
+    num = {c: st.column_config.NumberColumn(format="%.2f")
+           for c in show.columns[1:]}
+    num["Return effect pp"] = st.column_config.NumberColumn(format="%+.2f")
+    num["Investment"] = st.column_config.TextColumn(width="medium")
+    st.dataframe(show, hide_index=True, width="stretch", column_config=num)
+    section("At every horizon")
+    hz = cmpm.horizons(res_k, res_j, amount, PROV)
+    st.dataframe(
+        pd.DataFrame({
+            "Horizon": hz["Horizon"],
+            "Keepp": hz["Keepp typical value"].map(money),
+            PROV: hz[f"{PROV} typical value"].map(money),
+            "Keepp / yr": hz["Keepp typical return / yr"].map(
+                lambda x: pct(x, 2)),
+            f"{PROV} / yr": hz[f"{PROV} typical return / yr"].map(
+                lambda x: pct(x, 2)),
+            "Keepp chance of loss": hz["Keepp chance of loss"].map(
+                lambda x: pct(x, 1)),
+            f"{PROV} chance of loss": hz[f"{PROV} chance of loss"].map(
+                lambda x: pct(x, 1)),
+        }), hide_index=True, width="stretch")
+    st.caption("Typical (median) value, the yearly return it implies, and the "
+               "share of futures that end below what was put in.")
+
+    summ = cmpm.summary(res_k, res_j, amount, PROV)
+    meta = {"Amount (USD)": amount, "Years": int(years),
+            "Simulated futures": int(paths), "Random seed": int(seed),
+            "Benchmark assumptions": SRC_NAME,
+            "Correlations": f"{PROV} (both views)",
+            "Returns": "Compound (geometric), % per year"}
+    st.download_button(
+        "Download comparison (Excel)",
+        cmpm.to_excel_bytes(frame, summ, hz, meta, PROV),
+        f"keepp_vs_{'blackrock' if IS_BR else 'jpm'}_comparison.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        icon=":material/download:", key="cmp_dl")
+    st.markdown(
+        '<div class="note" style="margin-top:1rem">Both results use the same '
+        f'weights, {PROV}\'s correlations and the <b>same '
+        'simulated markets</b> (same random seed), so the gap between them comes '
+        'from the return and volatility assumptions alone. Figures are '
+        'simulations before fees, taxes and inflation, not guarantees.</div>',
+        unsafe_allow_html=True)
+    return res_k, res_j
+
+
 with tab_mix:
     mix_left, mix_right = st.columns([1.95, 1], gap="large")
 
@@ -1220,86 +1850,10 @@ with tab_mix:
                 bump_editors()
                 st.rerun()
         else:
-            section("What's in your portfolio",
-                    "One table per asset class. Pick an investment from the list "
-                    f"and it fills in {SRC_SHORT}'s figures — type over them to use "
-                    "your own. **+** adds a row; select a row and press Delete to "
-                    "remove it."
-                    + ("" if IS_BR else " ★ marks an expansion-proposal line."))
-            store = st.session_state.custom_alloc
-            # Each editor must be handed the SAME frame on every run until the
-            # next bump. With num_rows="dynamic", Streamlit hashes the data
-            # into the widget id, so feeding the editor its own output back
-            # (store → editor → store) changes the id on the run after an
-            # edit and silently drops whatever was typed next — values "snap
-            # back" and have to be entered twice. The base is re-read from the
-            # store only when the widget is fresh (new nonce, or it was not
-            # rendered last run, e.g. after a mode switch).
-            bases = st.session_state.setdefault("custom_bases", {})
-            parts, dirty_any = [], False
-
-            for key in CATEGORY_KEYS:
-                cat = SRC.CATEGORY_NAME[key]
-                wkey = f"grp_{key}_{NONCE}"
-                if wkey not in st.session_state or key not in bases:
-                    bases[key] = (store[store["Category"] == cat]
-                                  .reset_index(drop=True)[COLS])
-                g_prev = bases[key]
-                g_now = store[store["Category"] == cat]
-                g_sum = pd.to_numeric(g_now["Weight %"],
-                                      errors="coerce").fillna(0).sum()
-                st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;'
-                    f'align-items:baseline;margin:1rem 0 .15rem">'
-                    f'<span style="font-weight:650">{CATEGORY_PLAIN.get(cat, cat)}</span>'
-                    f'<span class="muted">{g_sum:.1f}% of portfolio</span></div>',
-                    unsafe_allow_html=True)
-                edited = st.data_editor(
-                    g_prev, key=wkey, hide_index=True,
-                    width='stretch', num_rows="dynamic",
-                    column_config={
-                        "LTCMA line": st.column_config.SelectboxColumn(
-                            "Investment", options=pl.choices(SRC, key),
-                            width="medium", required=True,
-                            help=f"{SRC_NAME} lines in {cat}. "
-                                 f"Type to filter."),
-                        # step MUST stay 0.01 — a coarser step snaps the
-                        # displayed value.
-                        "Weight %": st.column_config.NumberColumn(
-                            "Share %", min_value=0.0, max_value=100.0,
-                            step=0.01, format="%.2f"),
-                        "Return %": st.column_config.NumberColumn(
-                            "Expected return % / yr", min_value=-20.0,
-                            max_value=60.0, step=0.01, format="%.2f",
-                            help="Compound (geometric) return per year."),
-                        "Vol %": st.column_config.NumberColumn(
-                            "Yearly swings %", min_value=0.0, max_value=100.0,
-                            step=0.01, format="%.2f",
-                            help="Volatility: how much the value typically "
-                                 "moves up or down in a year."),
-                    },
-                )
-                synced, d = pl.sync_group(SRC, g_prev, edited, key)
-                # A deleted row shifts the rows below it, and sync_group's
-                # line-change check is positional against the base — rebase.
-                dirty_any = dirty_any or d or len(synced) < len(g_prev)
-                synced.insert(0, "Category", cat)
-                parts.append(synced)
-
-            alloc = (pd.concat(parts, ignore_index=True) if parts
-                     else custom_alloc_seed().iloc[0:0])
-            st.session_state.custom_alloc = alloc
+            # Custom: the two-view builder, on whichever provider the
+            # sidebar selects (J.P. Morgan or BlackRock).
+            alloc = custom_builder()
             pool_alloc = alloc            # Custom has no separate tick list
-            if dirty_any:
-                bump_editors()
-                st.rerun()
-
-            st.write("")
-            if st.button("↺ Clear all assets" if IS_BR
-                         else "↺ Reset to J.P. Morgan defaults"):
-                st.session_state.custom_alloc = custom_alloc_seed()
-                bump_editors()
-                st.rerun()
 
     alloc = alloc.reset_index(drop=True)
     for _c in ("Weight %", "Return %", "Vol %"):
@@ -1368,9 +1922,35 @@ with tab_mix:
                 st.altair_chart(ch, width='content')
                 st.markdown(legend_html(hdf), unsafe_allow_html=True)
         region_panel(alloc, "mix")
+        liquidity_panel(alloc, "mix", table=True)
+
+    # Custom mode: the two views side by side, before Save.
+    CMP_ACTIVE = not is_base
+    CMP_RES = None
+    if CMP_ACTIVE and not empty and not off:
+        CMP_FRAME = cmpm.frame_from_alloc(alloc, SRC)
+        CMP_RES = render_comparison(CMP_FRAME)
+
+    # Save: the only way a run reaches Saved scenarios. The click is acted on
+    # after the simulation below, which is what produces the figures saved.
+    # In the two-view builder it stores BOTH scenarios.
+    st.divider()
+    sv1, sv2 = st.columns([2.4, 1], vertical_alignment="bottom")
+    sv1.text_input("Scenario name (optional)", key=f"save_name_{NONCE}",
+                   max_chars=200, disabled=off,
+                   placeholder="Leave blank for an automatic name")
+    SAVE_CLICKED = sv2.button(
+        "Save both scenarios" if CMP_ACTIVE else "Save scenario",
+        type="primary", width='stretch', disabled=off,
+        icon=":material/save:",
+        help=("The mix must add up to 100% to be saved." if off else
+              f"Saves two scenarios: this mix on Keepp's figures and on "
+              f"{PROV}'s. Each can be restored from Saved scenarios."
+              if CMP_ACTIVE else
+              "Save this mix and its results to Saved scenarios."))
 
 # --------------------------------------------------------------------------
-# Saved runs panel — every run is stored in the database automatically.
+# Saved runs panel — runs stored in the database with Save scenario.
 # Defined here (before the 100% check) so it can also be shown when the
 # current mix is incomplete, e.g. right after signing in to an empty
 # Standard portfolio, which is exactly when someone wants an old run back.
@@ -1378,6 +1958,254 @@ with tab_mix:
 def _rename_run(run_id, key):
     if DB.rename_run(UID, run_id, st.session_state.get(key, "")):
         st.toast("Run renamed.", icon=":material/check:")
+
+
+def numbered_runs():
+    """The user's saved runs, oldest first, numbered 1..N (see rs.renumber)."""
+    stored = DB.list_runs(UID)
+    return [replace(x, record=r)
+            for x, r in zip(stored, rs.renumber([x.record for x in stored]))]
+
+
+VIEW_ALL, VIEW_KEEPP, VIEW_JPM, VIEW_BR = ("All", "Keepp (Custom)",
+                                           "J.P. Morgan", "BlackRock")
+SORT_NEW, SORT_OLD, SORT_HI, SORT_LO = ("Newest", "Oldest", "Return ↓",
+                                        "Return ↑")
+# Saved-scenarios table, left to right. Columns not named here (Assumptions,
+# Years) follow at the end.
+RUNS_COL_ORDER = ["On screen", "#", "View", "Label", "Return %",
+                  "Volatility %", "P(loss) %", "Median wealth", "Saved",
+                  "Sleeves", "Mode", "Paths", "Seed", "Assumptions", "Years"]
+# The headers the table shows — and the Excel Summary sheet repeats.
+RUNS_HEADERS = {"On screen": "Current", "Label": "Scenario",
+                "Return %": "Avg return %", "P(loss) %": "Chance of loss %",
+                "Median wealth": "Typical ×", "Sleeves": "Holdings",
+                "Paths": "Futures"}
+
+
+def runs_view_frame(hist_df: pd.DataFrame) -> pd.DataFrame:
+    """The Saved scenarios table as the page shows it: same columns, order
+    and headers. Used for the Excel Summary sheet."""
+    cols = [c for c in RUNS_COL_ORDER if c in hist_df.columns]
+    return hist_df[cols].rename(columns=RUNS_HEADERS).reset_index(drop=True)
+
+
+def run_src(rec):
+    """The assumptions object a saved run was made on: J.P. Morgan, or
+    BlackRock for the run's own scenario and horizon."""
+    sid = str(getattr(rec, "source", JPM_KEY) or JPM_KEY)
+    if sid.startswith(BR_KEY):
+        return source_for(BR_KEY, brc.parse_source_id(sid), rec.years)
+    return jpm
+
+
+def run_view(rec):
+    """(view, family, label): view is 'keepp' or 'provider' (derived from the
+    figures, see compare.classify), family 'jpm' or 'blackrock'."""
+    fam = BR_KEY if str(rec.source).startswith(BR_KEY) else JPM_KEY
+    try:
+        view = cmpm.classify(rec, run_src(rec))
+    except Exception:
+        view = "keepp"
+    label = ("Keepp (Custom)" if view == "keepp"
+             else rs.source_label(rec.source))
+    return view, fam, label
+
+
+def run_pair_key(rec):
+    try:
+        return cmpm.pair_key(rec, run_src(rec))
+    except Exception:
+        return ("unpaired", rec.seq)
+
+
+def view_matches(rec, flt):
+    if flt in (None, VIEW_ALL):
+        return True
+    view, fam, _ = run_view(rec)
+    if flt == VIEW_KEEPP:
+        return view == "keepp"
+    return view == "provider" and fam == (JPM_KEY if flt == VIEW_JPM
+                                          else BR_KEY)
+
+
+def provider_side_result(rec):
+    """Simulate a Keepp run's portfolio on its provider's figures (same
+    holdings, weights, horizon, futures and seed), for when that view was
+    never saved. Cached by run_sim."""
+    src = run_src(rec)
+    frame = cmpm.frame_from_alloc(pd.DataFrame(rec.sleeves), src)
+    return run_sim(*cmpm.sim_inputs(frame, "provider", src), int(rec.paths),
+                   int(rec.years), int(rec.seed))[0]
+
+
+def comparison_rows(picked, stored):
+    """One row per portfolio among `picked`: Keepp and provider metrics.
+
+    Each run is matched to its other view among ALL saved runs (`stored`),
+    so either half of a saved pair is enough. A Keepp run whose provider view
+    was never saved gets it simulated now. Shared by the on-page table and
+    the Excel Summary sheet, so the two always agree."""
+    keys = {x.id: run_pair_key(x.record) for x in stored}
+    views = {x.id: run_view(x.record) for x in stored}
+    order, rows = [], {}
+    for x in picked:
+        k = keys[x.id]
+        if k in rows:
+            continue
+        mates = [y for y in stored if keys[y.id] == k]
+        # Prefer a selected run of each view, then the newest.
+        pick_first = sorted(mates, key=lambda y: (y not in picked,))
+        row = {"keepp": None, "provider": None}
+        for y in pick_first:
+            v = views[y.id][0]
+            if row[v] is None:
+                row[v] = y
+        rows[k] = row
+        order.append(k)
+
+    out = []
+    for k in order:
+        r = rows[k]
+        rec = (r["keepp"] or r["provider"]).record
+        mk = cmpm.run_metrics(r["keepp"].record) if r["keepp"] else None
+        sim = False
+        if r["provider"] is not None:
+            mp = cmpm.run_metrics(r["provider"].record)
+            p_tag = f'#{r["provider"].record.seq}'
+        elif r["keepp"] is not None:
+            try:
+                mp = cmpm.run_metrics(result=provider_side_result(rec))
+                p_tag, sim = "simulated now", True
+            except Exception:
+                mp, p_tag = None, "unavailable"
+        else:
+            mp, p_tag = None, ""
+        out.append({"name": rec.label, "seq": rec.seq,
+                    "provider": rs.source_label(rec.source),
+                    "years": rec.years,
+                    "keepp_run": (f'#{r["keepp"].record.seq}' if r["keepp"]
+                                  else "none saved"),
+                    "provider_run": p_tag, "simulated": sim,
+                    "keepp": mk, "prov": mp})
+    return out
+
+
+CMP_METRICS = [("Average return / yr", "pct"), ("Typical return / yr", "pct"),
+               ("Typical ×", "money")]
+
+
+def comparison_excel_frame(rows):
+    """The Keepp vs provider table for Excel: two-level headers (metric,
+    Keepp / Provider / Difference). Returns in %, differences in pp, values
+    in USD for the sidebar amount — the same numbers the page shows."""
+    data = []
+    for r in rows:
+        d = {("Scenario", ""): r["name"], ("Provider", ""): r["provider"],
+             ("Years", ""): r["years"], ("Keepp run", ""): r["keepp_run"],
+             ("Provider run", ""): r["provider_run"]}
+        for m, kind in CMP_METRICS:
+            scale = amount if kind == "money" else 100.0
+            g = (f"Typical value of {money(amount)} (USD)" if kind == "money"
+                 else f"{m} (%)")
+            mk, mp = r["keepp"], r["prov"]
+            d[(g, "Keepp")] = mk[m] * scale if mk else None
+            d[(g, "Provider")] = mp[m] * scale if mp else None
+            d[(g, "Difference" + ("" if kind == "money" else " (pp)"))] = (
+                (mk[m] - mp[m]) * scale if mk and mp else None)
+        data.append(d)
+    df = pd.DataFrame(data)
+    if len(df):
+        df.columns = pd.MultiIndex.from_tuples(df.columns)
+    return df
+
+
+def views_comparison(picked, stored):
+    """Keepp vs provider returns for the selected scenarios (page)."""
+    crow = comparison_rows(picked, stored)
+    cmp_css()
+    section("Keepp vs provider returns",
+            "For each selected scenario: its Keepp (Custom) figures next to "
+            "the provider's, and the difference. Selecting either half of a "
+            "saved pair is enough.")
+    METRICS = CMP_METRICS
+    head = ('<tr><th rowspan="2">Scenario</th>'
+            + "".join(f'<th colspan="3" style="text-align:center">{m}'
+                      f'{" (value of " + money(amount) + ")" if k == "money" else ""}'
+                      f'</th>' for m, k in METRICS) + '</tr><tr>'
+            + "".join('<th>Keepp</th><th>Provider</th><th>Difference</th>'
+                      for _ in METRICS) + '</tr>')
+    body, chart_rows, notes = [], [], set()
+    for r in crow:
+        mk, mp, name = r["keepp"], r["prov"], r["name"]
+        prov_name, k_tag, p_tag = r["provider"], r["keepp_run"], r["provider_run"]
+        if r["simulated"]:
+            notes.add("sim")
+        cells = []
+        for m, kind in METRICS:
+            def fmt(d):
+                if d is None:
+                    return '<span class="muted">—</span>'
+                return money(d[m] * amount) if kind == "money" else pct(d[m], 2)
+            cells.append(f'<td class="k">{fmt(mk)}</td><td class="j">{fmt(mp)}'
+                         f'</td>')
+            cells.append(f'<td>{cmp_diff(kind, (mk[m] - mp[m]) * (amount if kind == "money" else 1))}</td>'
+                         if mk and mp else '<td class="muted">—</td>')
+        body.append(
+            f'<tr><td><b>{name}</b><div class="muted" style="font-size:.76rem">'
+            f'{prov_name} · {r["years"]}y · Keepp {k_tag} · provider {p_tag}'
+            f'</div></td>{"".join(cells)}</tr>')
+        if mk and mp:
+            for who, d in (("Keepp", mk), (prov_name, mp)):
+                chart_rows.append({"Scenario": f"{r['seq']}. {name}",
+                                   "Who": "Keepp" if who == "Keepp" else "Provider",
+                                   "Label": who,
+                                   "r": d["Average return / yr"],
+                                   "r_l": pct(d["Average return / yr"], 2)})
+    st.markdown('<div style="overflow-x:auto"><table class="cmpt">' + head
+                + "".join(body) + '</table></div>', unsafe_allow_html=True)
+    foot = ("Difference = Keepp minus provider; ▲/▼ show the direction, not "
+            "which is better. Provider = J.P. Morgan 2027 or BlackRock for the "
+            "scenario's own scenario and horizon.")
+    if "sim" in notes:
+        foot += (" <i>simulated now</i>: that portfolio's provider view was "
+                 "never saved, so it is run on the spot with the scenario's "
+                 "own horizon, futures and seed.")
+    st.markdown(f'<div class="foot" style="margin-top:.4rem">{foot}</div>',
+                unsafe_allow_html=True)
+
+    if chart_rows:
+        cdf = pd.DataFrame(chart_rows)
+        sort = list(dict.fromkeys(cdf["Scenario"]))
+        span = (cdf.groupby("Scenario")["r"].agg(["min", "max"])
+                .reindex(sort).reset_index())
+        cs = alt.Scale(domain=["Keepp", "Provider"], range=[KEEPP_C, JPM_C])
+        lo, hi = float(cdf["r"].min()), float(cdf["r"].max())
+        pad = max((hi - lo) * 0.15, 0.002)
+        xs = alt.Scale(domain=[lo - pad, hi + pad], nice=False)
+        ys = alt.Scale(domain=sort)
+        y = alt.Y("Scenario:N", scale=ys, title=None,
+                  axis=alt.Axis(labelLimit=280, labelColor=INK, domain=False,
+                                ticks=False, labelFontSize=12))
+        rule = alt.Chart(span).mark_rule(color=INK_3, strokeWidth=2,
+                                         opacity=.5).encode(
+            y=y, x=alt.X("min:Q", scale=xs), x2="max:Q")
+        dots = alt.Chart(cdf).mark_circle(size=150, opacity=1).encode(
+            y=y, x=alt.X("r:Q", title="Average return / yr", scale=xs,
+                         axis=alt.Axis(format=".1%", labelColor=INK_3,
+                                       gridColor=GRID, titleColor=INK_3,
+                                       titleFontWeight=400)),
+            color=alt.Color("Who:N", scale=cs, legend=alt.Legend(
+                title=None, orient="top", labelColor=INK_2)),
+            tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Label:N",
+                                                              title="View"),
+                     alt.Tooltip("r_l:N", title="Average return / yr")])
+        # Explicit pixel height: with height="content" Streamlit collapsed
+        # the point scale of this layered chart onto one line.
+        h_px = max(56 * len(sort), 120)
+        st.altair_chart((rule + dots).properties(height=h_px)
+                        .configure_view(strokeWidth=0),
+                        width="stretch", height=h_px + 70)
 
 
 def saved_runs_panel(current_digest=None):
@@ -1389,23 +2217,52 @@ def saved_runs_panel(current_digest=None):
 
 def _saved_runs_body(current_digest):
     section("Saved scenarios",
-            "Every run is saved to your account automatically, so it is still "
-            "here after a refresh or on another device. Select rows in the "
-            "table to restore, rename, compare or delete them.")
+            "A scenario is saved to your account when you press Save scenario "
+            "at the bottom of Your mix, so it is still here after a refresh or "
+            "on another device. Select rows in the table to restore, rename, "
+            "compare or delete them.")
     try:
-        stored = list(reversed(DB.list_runs(UID)))      # newest first
+        stored = numbered_runs()[::-1]                  # newest first
     except Exception as e:                # database blip: keep the results page up
         st.warning("Saved scenarios could not be loaded just now: the database "
                    "did not respond. Nothing is lost; refresh the page in a "
                    "moment.", icon=":material/cloud_off:")
         st.caption(f"{type(e).__name__}: {str(e).splitlines()[0][:300]}")
         return
+    all_stored = stored
+    # Which runs to list: every view, only Keepp's own (Custom) figures, or
+    # only one provider's published figures. The view is derived from each
+    # run's figures (compare.classify), so older runs are sorted too.
+    f_col, s_col = st.columns([1.35, 1], gap="medium")
+    flt = f_col.segmented_control(
+        "Show", [VIEW_ALL, VIEW_KEEPP, VIEW_JPM, VIEW_BR], key="runs_filter",
+        default=VIEW_ALL, width="stretch",
+        help="Keepp (Custom): runs on Keepp's own return / volatility "
+             "figures. J.P. Morgan / BlackRock: runs on that provider's "
+             "published figures, including Standard-mode runs.") or VIEW_ALL
+    # Sort within whatever the filter shows. Return = the average (arithmetic)
+    # return per year, the "Avg return %" column.
+    srt = s_col.segmented_control(
+        "Sort by", [SORT_NEW, SORT_OLD, SORT_HI, SORT_LO], key="runs_sort",
+        default=SORT_NEW, width="stretch",
+        help="Saved time, or average return per year. Applies to the list "
+             "the Show filter selects.") or SORT_NEW
+    stored = [x for x in all_stored if view_matches(x.record, flt)]
+    if srt == SORT_OLD:
+        stored = sorted(stored, key=lambda x: (x.record.created_at, x.id))
+    elif srt in (SORT_HI, SORT_LO):
+        stored = sorted(stored, key=lambda x: x.record.exp_return_pct,
+                        reverse=srt == SORT_HI)
+    else:                                       # newest first
+        stored = sorted(stored, key=lambda x: (x.record.created_at, x.id),
+                        reverse=True)
     saved = [x.record for x in stored]
     # The key changes whenever a run is added or removed, which clears the
     # selection: a new run lands at the top and would otherwise shift every
-    # selected row onto a different run.
+    # selected row onto a different run. The filter is part of it for the
+    # same reason.
     tbl_key = (f"runs_tbl_{st.session_state.get('runs_tbl_v', 0)}_"
-               f"{len(stored)}_{stored[0].id if stored else 0}")
+               f"{len(stored)}_{stored[0].id if stored else 0}_{flt}_{srt}")
     sel_state = st.session_state.get(tbl_key)
     sel_rows = []
     if sel_state is not None:
@@ -1462,17 +2319,20 @@ def _saved_runs_body(current_digest):
                 st.rerun()
 
     if current_digest is not None:
-        cur = next((x for x in stored if x.digest == current_digest), None)
+        cur = next((x for x in all_stored if x.digest == current_digest), None)
         st.markdown(
             f'<div class="muted">The run on screen is saved as '
             f'<b>#{cur.record.seq} · {cur.record.label}</b>.</div>' if cur else
-            '<div class="muted">The run on screen is not in the list (it was '
-            'deleted). Change any input, or press <i>Undo</i>, to save it '
-            'again.</div>', unsafe_allow_html=True)
+            '<div class="muted">The run on screen is not saved. Press '
+            '<i>Save scenario</i> at the bottom of <b>Your mix</b> to add it '
+            'to this list.</div>', unsafe_allow_html=True)
 
     if not saved:
-        st.caption("No runs saved yet. Results are saved here as soon as a mix "
-                   "adds up to 100%.")
+        st.caption("No scenarios saved yet. Build a mix that adds up to 100% "
+                   "and press Save scenario at the bottom of Your mix."
+                   if not all_stored else
+                   f"No saved scenarios in “{flt}”. Pick another filter "
+                   "above.")
         return
 
     with st.container():                   # compare chart: 2+ runs only
@@ -1503,7 +2363,8 @@ def _saved_runs_body(current_digest):
                                            fontWeight=600, color=INK_2).encode(
                 x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
             which = ("the selected scenarios" if len(picked) >= 2 else
-                     "the most recent scenarios — select rows to compare others")
+                     "the first eight scenarios in the list — select rows to compare "
+                     "others")
             st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
                         f'the end of {which}</div>', unsafe_allow_html=True)
             st.altair_chart((bars + txt).properties(
@@ -1513,32 +2374,56 @@ def _saved_runs_body(current_digest):
     hist_df = rs.history_table(saved)
     hist_df.insert(0, "On screen", ["●" if x.digest == current_digest else ""
                                     for x in stored])
+    hist_df.insert(2, "View", [run_view(r)[2] for r in saved])
     st.dataframe(
         hist_df, hide_index=True, width='stretch', key=tbl_key,
         on_select="rerun", selection_mode="multi-row",
+        column_order=[c for c in RUNS_COL_ORDER if c in hist_df.columns],
         column_config={
             "On screen": st.column_config.TextColumn("", width="small",
                                                      help="The run shown above"),
             "#": st.column_config.NumberColumn(width="small"),
             "Label": st.column_config.TextColumn("Scenario", width="medium"),
+            "View": st.column_config.TextColumn(
+                "View", width="medium",
+                help="Keepp (Custom) = Keepp's own figures; otherwise the "
+                     "provider's published figures."),
             "Saved": st.column_config.TextColumn(width="medium"),
             "Paths": st.column_config.NumberColumn("Futures"),
             "Sleeves": st.column_config.NumberColumn("Holdings"),
             "Return %": st.column_config.NumberColumn("Avg return %",
                                                       format="%.2f"),
-            "Volatility %": st.column_config.NumberColumn("Swings %",
+            "Volatility %": st.column_config.NumberColumn("Volatility %",
                                                           format="%.2f"),
+            "Seed": st.column_config.NumberColumn(format="%d"),
             "Median wealth": st.column_config.NumberColumn("Typical ×",
                                                            format="%.3f×"),
             "P(loss) %": st.column_config.NumberColumn("Chance of loss %",
                                                        format="%.2f"),
         })
-    export = [x.record for x in (picked or stored)]
-    export = sorted(export, key=lambda r: r.seq)
+    if picked:
+        views_comparison(picked, all_stored)
+    else:
+        st.caption("Select one or more scenarios in the table to see their "
+                   "Keepp and provider returns side by side.")
+
+    # Export = the table as shown (filter, sort, columns), narrowed to the
+    # selected rows if any — so the Summary sheet matches the page row for
+    # row. Run sheets follow the same order.
+    rows_out = sorted(sel_rows) if picked else list(range(len(stored)))
+    export = [stored[i].record for i in rows_out]
+    list_df = runs_view_frame(hist_df.iloc[rows_out])
+    # Summary sheet = the Keepp vs provider returns table, for the same runs.
+    try:
+        summary_df = comparison_excel_frame(
+            comparison_rows([stored[i] for i in rows_out], all_stored))
+    except Exception:                     # never block the download
+        summary_df = None
     st.download_button(
         f"Download Excel ({len(export)} {'selected ' if picked else ''}"
         f"scenario{'s' if len(export) != 1 else ''})",
-        rs.to_excel_bytes(export), "keepp_saved_runs.xlsx",
+        rs.to_excel_bytes(export, summary=summary_df, scenarios=list_df),
+        "keepp_saved_runs.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         icon=":material/download:")
 
@@ -1571,23 +2456,56 @@ w_t, r_t, v_t, corr_full = sleeve_inputs(alloc)
 with st.spinner("Simulating markets…"):
     res, repaired = run_sim(w_t, r_t, v_t, tuple(corr_full.flatten()),
                             int(paths), int(years), int(seed))
-# Auto-save: every distinct run goes into the user's history. The digest
-# covers everything that determines the numbers, so a rerun caused by an
-# unrelated click (or re-running a scenario already in the list) saves
-# nothing. Remembering the last digest also keeps a run the user has just
-# deleted from popping straight back in.
+# Save only on the Save scenario button (Your mix tab). The digest covers
+# everything that determines the numbers, so saving a scenario that is
+# already in the list adds nothing.
 RUN_MODE = "Base" if is_base else "Custom"
 RUN_DIGEST = rs.run_digest(RUN_MODE, alloc[rs.ALLOC_COLS].to_dict("records"),
                            paths, years, seed, source=SRC_ID)
-if st.session_state.get("_last_digest") != RUN_DIGEST:
+if SAVE_CLICKED and CMP_ACTIVE:
+    # Two scenarios, both as Custom runs so personal lines restore intact:
+    # the Keepp view (what this mix simulates) and the same mix on the
+    # provider's figures (J.P. Morgan or BlackRock). Both carry SRC_ID, so a
+    # restore brings back the right provider. Identical figures give identical digests, so the
+    # second is then reported as already saved rather than stored twice.
     try:
-        DB.save_run(UID, rs.make_record(0, "", RUN_MODE, alloc, paths, years,
-                                        seed, res, source=SRC_ID),
-                    RUN_DIGEST, pool=POOL_LINES if is_base else [])
-        st.session_state._last_digest = RUN_DIGEST
+        name = st.session_state.get(f"save_name_{NONCE}", "").strip()
+        res_jpm = CMP_RES[1] if CMP_RES else run_sim(
+            *cmpm.sim_inputs(CMP_FRAME, "provider", SRC), int(paths), int(years),
+            int(seed))[0]
+        out = []
+        for side, a_df, r_obj, tag in (
+                ("keepp", alloc, res, "Keepp assumptions"),
+                ("provider", cmpm.to_alloc(CMP_FRAME, "provider", SRC),
+                 res_jpm, PROV_TITLE)):
+            lbl = f"{name} · {tag}" if name else f"{tag} · {int(years)}y"
+            dg = rs.run_digest("Custom", a_df[rs.ALLOC_COLS].to_dict("records"),
+                               paths, years, seed, source=SRC_ID)
+            new = DB.save_run(UID, rs.make_record(0, lbl, "Custom", a_df, paths,
+                                                  years, seed, r_obj,
+                                                  source=SRC_ID), dg)
+            runs = numbered_runs()
+            cur = next((x for x in reversed(runs) if x.digest == dg), None)
+            t = f"#{cur.record.seq} · {cur.record.label}" if cur else tag
+            out.append(f"{'Saved' if new else 'Already saved'} {t}")
+        st.toast(" · ".join(out) + ".", icon=":material/check:")
     except Exception as e:                # never lose the results over a save
-        st.toast(f"This run could not be saved ({type(e).__name__}). It will "
-                 f"be retried on the next change.", icon=":material/error:")
+        st.toast(f"These runs could not be saved ({type(e).__name__}). Try "
+                 f"again in a moment.", icon=":material/error:")
+elif SAVE_CLICKED:
+    try:
+        name = st.session_state.get(f"save_name_{NONCE}", "")
+        new = DB.save_run(UID, rs.make_record(0, name, RUN_MODE, alloc, paths,
+                                              years, seed, res, source=SRC_ID),
+                          RUN_DIGEST, pool=POOL_LINES if is_base else [])
+        runs = numbered_runs()
+        cur = next((x for x in reversed(runs) if x.digest == RUN_DIGEST), None)
+        tag = f"#{cur.record.seq} · {cur.record.label}" if cur else ""
+        st.toast(f"Saved as {tag}." if new else f"Already saved as {tag}.",
+                 icon=":material/check:")
+    except Exception as e:                # never lose the results over a save
+        st.toast(f"This run could not be saved ({type(e).__name__}). Try "
+                 f"again in a moment.", icon=":material/error:")
 
 term = res.rows[-1]
 T = term["_years"]
@@ -1712,8 +2630,12 @@ with tab_over:
             f'<span class="{"on" if i <= R_IDX else ""}"></span>'
             for i in range(len(RISK_LEVELS)))
         st.markdown(
-            f'<div class="card"><div class="lbl">Risk level</div>'
-            f'<div class="val" style="color:{rc}">{R_NAME}</div>'
+            f'<div class="card"><div style="display:flex;'
+            f'justify-content:space-between;gap:16px">'
+            f'<div><div class="lbl">Risk level</div>'
+            f'<div class="val" style="color:{rc}">{R_NAME}</div></div>'
+            f'<div style="text-align:right"><div class="lbl">Volatility</div>'
+            f'<div class="val">{pct(res.analytic_vol, 2)}</div></div></div>'
             f'<div class="meter" style="--c:{rc}">{segs}</div>'
             f'<div class="meterlbl"><span>Very low</span><span>Very high</span></div>'
             f'<div class="sub" style="margin-top:10px">In a normal year the value '
@@ -1745,6 +2667,7 @@ with tab_over:
         with d2:
             st.markdown(legend_html(hdf, ALLOC_DESCS), unsafe_allow_html=True)
         region_panel(alloc, "over")
+        liquidity_panel(alloc, "over")
 
     st.write("")
     st.markdown(
@@ -1970,6 +2893,25 @@ with tab_opt:
                         c.replace(" %", ""), min_value=0.0, max_value=100.0,
                         step=0.5, format="%.1f") for c in GEO_COLS[1:]}})
 
+            st.markdown('<div class="muted" style="margin:.8rem 0 .3rem">'
+                        '<b>Liquidity limits</b> — share of the whole portfolio, '
+                        'e.g. at least 50% in L1–L2 (cash within a week), at most '
+                        '25% in L4–L5 (gated or locked). Split lines count by '
+                        'their share in each tier.</div>', unsafe_allow_html=True)
+            liq_cur = liq_limits_current()
+            st.data_editor(
+                st.session_state.liq_base, key="liq_limits", hide_index=True,
+                width='stretch', num_rows="fixed", disabled=["Tiers"],
+                column_config={
+                    "Tiers": st.column_config.TextColumn("Liquidity tiers",
+                                                         width="medium"),
+                    "Min %": st.column_config.NumberColumn(
+                        "At least %", min_value=0.0, max_value=100.0, step=0.5,
+                        format="%.1f"),
+                    "Max %": st.column_config.NumberColumn(
+                        "At most %", min_value=0.0, max_value=100.0, step=0.5,
+                        format="%.1f")})
+
         lower = np.zeros(n_lines)
         upper = np.full(n_lines, cap_pct / 100.0)
         if cash_pos:
@@ -1979,9 +2921,10 @@ with tab_opt:
                                     float(r["Max %"]) / 100.0)
                     for _, r in bands_df.iterrows()}
         geo_rows = geo.exposure_rows(SRC, opt_lines, opt_cats, geo_cur)
+        liq_rows = liq.exposure_rows(SRC, opt_lines, liq_cur, liq_overrides())
         limits = opt.Limits(lower, upper, groups,
                             {k: band_map.get(k, (0.0, 1.0)) for k in groups},
-                            exposure=geo_rows)
+                            exposure=geo_rows + liq_rows)
 
         target_pct = budget_pct = None
         if objective in (OBJ_MINVOL, OBJ_MAXRET):
@@ -1998,7 +2941,7 @@ with tab_opt:
                 round(float(floor_pct), 6), round(float(cap_pct), 6),
                 bool(is_universe), metric,
                 tuple((nm, round(lo, 8), round(hi, 8), tuple(np.round(a, 8)))
-                      for nm, a, lo, hi in geo_rows),
+                      for nm, a, lo, hi in geo_rows + liq_rows),
             )
             with target_slot:
                 try:
@@ -2059,7 +3002,7 @@ with tab_opt:
         with st.container():
             if run_opt:
                 # Across the catalogue the frontier is NOT solved up front: at
-                # n=58 it is 24 QPs at ~0.6s each, and only the optional map in an
+                # n=59 it is 24 QPs at ~0.6s each, and only the optional map in an
                 # expander needs it. Best balance uses the one-QP tangency
                 # (universe.max_sharpe_qp) instead — measured 1.4s vs 19s, and at
                 # least as high a Sharpe (test_universe.py). Over the sleeves every
@@ -2304,6 +3247,34 @@ with tab_opt:
                     f"{nm} {lo*100:.0f}–{hi*100:.0f}% → "
                     f"{float(np.asarray(a) @ w_opt) * 100:.1f}%"
                     for nm, a, lo, hi in geo_rows))
+
+            # ---- by liquidity tier ----------------------------------------
+            ov = liq_overrides()
+            l_now = liq.exposure(SRC, opt_lines, cur_w * 100, ov)
+            l_new = liq.exposure(SRC, opt_lines, w_opt * 100, ov)
+            section("By liquidity",
+                    "How quickly the portfolio could become cash, today and "
+                    f"suggested. Suggested: {liq.ladder_sentence(l_new)}")
+            l_tbl = pd.DataFrame({
+                "Tier": [TIER_NAME[t] for t in liq.TIERS],
+                "Time to cash": [liq.TIME_TO_CASH[t] for t in liq.TIERS],
+                "Today %": l_now.values,
+                "Suggested %": l_new.values,
+                "Change (pts)": (l_new - l_now).values})
+            st.dataframe(l_tbl, hide_index=True, width='stretch',
+                         column_config={
+                             **{c: st.column_config.NumberColumn(format="%.1f%%")
+                                for c in ["Today %", "Suggested %"]},
+                             "Change (pts)": st.column_config.NumberColumn(
+                                 format="%+.1f")})
+            d_now = liq.days_to_cash(SRC, opt_lines, cur_w, ov)
+            d_new = liq.days_to_cash(SRC, opt_lines, w_opt, ov)
+            st.caption(f"Weighted-average time to cash: {fmt_days(d_now)} today → "
+                       f"{fmt_days(d_new)} suggested."
+                       + ("  Liquidity limits applied: " + "; ".join(
+                           f"{nm} {lo*100:.0f}–{hi*100:.0f}% → "
+                           f"{float(np.asarray(a) @ w_opt) * 100:.1f}%"
+                           for nm, a, lo, hi in liq_rows) if liq_rows else ""))
 
             # ---- what changes ---------------------------------------------
             section("What would change",
@@ -2602,6 +3573,70 @@ with tab_det:
                      f"{res.elapsed_ms:.0f} ms · seed {seed}"), unsafe_allow_html=True)
     m4.markdown(card("Holdings", f"{int((alloc['Weight %'] > 0).sum())}",
                      "Rebalanced to target every month"), unsafe_allow_html=True)
+    st.write("")
+
+    # ---- expected return, two ways --------------------------------------
+    # Multiplying weights by the Return column is the obvious hand check and
+    # gives a LOWER number than the simulation. Both answers live here, side
+    # by side, with the three lines that get from one to the other. The maths,
+    # and why the gap can only go this way, is in engine.return_ladder().
+    # Collapsed by default: nothing in this tab moves unless it is opened.
+    LAD = return_ladder(w_t, r_t, v_t, corr_full)
+    with st.expander("Expected return, two ways"):
+        c1, c2 = st.columns(2)
+        c1.markdown(card("Weighted average", pct(LAD.weighted_simple, 2),
+                         "Σ weight × Return %"), unsafe_allow_html=True)
+        c2.markdown(card("Monte Carlo return", pct(LAD.compound, 2),
+                         f"Simulated {pct(term['Median'], 2)} over {T}y"),
+                    unsafe_allow_html=True)
+        st.write("")
+        c1, c2 = st.columns(2)
+        c1.markdown(
+            '<div class="srctext">Each holding\'s weight times its '
+            'Return %, added up. It is the right answer only if the whole '
+            'portfolio is as volatile as the average of its holdings.</div>',
+            unsafe_allow_html=True)
+        c2.markdown(
+            '<div class="srctext">What the money actually compounds at — the '
+            'Typical (median) row in the table above. The simulated figure '
+            'differs from the arithmetic below only by sampling noise.</div>',
+            unsafe_allow_html=True)
+        st.write("")
+        steps = pd.DataFrame([
+            {"Line": "Weighted average",
+             "Why": "Σ weight × Return %",
+             "Per year": pct(LAD.weighted_simple, 2)},
+            {"Line": "plus what each holding averages above its compound rate",
+             "Why": "Σ weight × Vol² ÷ 2",
+             "Per year": pct(LAD.variance_uplift, 2, sign=True)},
+            {"Line": "minus what the portfolio loses to its own swings",
+             "Why": f"Vol² ÷ 2, at Vol {pct(LAD.portfolio_vol, 2)}",
+             "Per year": pct(0.0 - LAD.variance_drag, 2, sign=True)},
+            {"Line": "Monte Carlo return",
+             "Why": "what the portfolio compounds at",
+             "Per year": pct(LAD.compound, 2)},
+        ])
+        st.dataframe(steps, hide_index=True, width='stretch',
+                     column_config={
+                         "Line": st.column_config.TextColumn(width="large"),
+                         "Per year": st.column_config.TextColumn(
+                             width="small")})
+        st.markdown(
+            f'<div class="srctext">The middle two lines do not cancel, which '
+            f'is the whole difference — <b>{pct(LAD.compound - LAD.weighted_simple, 2, sign=True)}</b> '
+            f'here, and it can only ever go this way. Your holdings average '
+            f'<b>{pct(LAD.avg_sleeve_vol, 2)}</b> of volatility between them, '
+            f'but held together they come to <b>{pct(LAD.portfolio_vol, 2)}</b>, '
+            f'so the portfolio loses less to its swings than a weighted '
+            f'average assumes. The two meet only when a portfolio holds one '
+            f'thing, or holds things of equal volatility that move in '
+            f'lockstep.</div>', unsafe_allow_html=True)
+        if abs(LAD.weight_sum - 100.0) > 0.05:
+            st.caption(f"Weights total {LAD.weight_sum:.2f}%, not 100%. Both "
+                       f"figures are on the whole portfolio, so the missing "
+                       f"{100 - LAD.weight_sum:+.2f}% earns nothing — which "
+                       f"is also how the simulation treats it.")
+
     st.write("")
 
     csv = disp.round(4).to_csv(index=False)

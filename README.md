@@ -1,7 +1,7 @@
 # Keepp Capital — Monte Carlo Allocation Simulator
 
 A Streamlit app that simulates a portfolio's future value using Monte Carlo
-methods, built on J.P. Morgan's 2026 Long-Term Capital Market Assumptions
+methods, built on J.P. Morgan's 2027 Long-Term Capital Market Assumptions
 (LTCMA). Enter an allocation, and the app runs thousands of simulated
 paths to show a range of likely outcomes over 3, 5, and 10 years.
 
@@ -10,26 +10,38 @@ paths to show a range of likely outcomes over 3, 5, and 10 years.
 - **Base mode** — start from Keepp's target allocation. Returns, volatilities
   and correlations are locked to the J.P. Morgan figures; you can only change
   the weights.
-- **Custom mode** — build your own allocation from any of the 58 LTCMA lines
+- **Custom mode** — build your own allocation from any of the 59 LTCMA lines
   across three categories (Fixed Income, Equities, Alternatives), with fully
-  editable returns and volatilities.
+  editable returns and volatilities. A **Keepp vs provider comparison** panel
+  re-runs the same weights with the provider's published figures so you can
+  see the exact dollar impact of differing assumptions (common random numbers
+  keep simulation noise near zero).
 - **Two sets of market assumptions** — switch in the sidebar between J.P.
-  Morgan's 2026 LTCMA (58 asset classes) and BlackRock's Capital Market
-  Assumptions, August 2026 (34 asset classes, with a base case and two
-  scenarios). Each keeps its own portfolio; saved runs remember which one
-  they used.
+  Morgan's 2027 LTCMA (59 asset classes, including Digital Assets) and
+  BlackRock's Capital Market Assumptions, August 2026 (34 asset classes, with
+  a base case and two scenarios). Each keeps its own portfolio; saved runs
+  remember which one they used.
 - **Optimizer** — given a set of return/risk assumptions, solves for the
   allocation that maximizes Sharpe ratio, maximizes long-run growth, or hits
   a target return/risk with minimum risk/maximum return.
+- **Liquidity tiers** — every line is assigned an L1–L5 tier (Cash → Locked)
+  with an estimated time-to-cash and a crisis haircut. The optimizer can
+  enforce a minimum liquid fraction; the allocation panel shows a stacked bar
+  of the portfolio's liquidity profile.
+- **Return reconciliation** — an expandable panel breaks down why the
+  simulator's compound return differs from the weighted average of the Return
+  column, splitting the gap into a dispersion term (spread of sleeve
+  volatilities) and a diversification term (correlations below 1).
 - **Results** — a percentile table (5th/25th/median/75th/95th) and a wealth
   fan chart for each horizon.
-- **Saved runs** — every run is saved automatically to the signed-in user's
+- **Saved runs** — pressing *Save scenario* at the bottom of Your mix saves
+  the run (numbered 1, 2, 3, ... in the list) to the signed-in user's
   account in a database, so the history survives a refresh, a restart and a
   change of device. Runs can be restored (puts the holdings, figures,
   horizon, number of futures and seed back into the app), renamed, compared,
   deleted (with one-step undo) and exported to Excel.
 
-Correlations come from J.P. Morgan's published 59×59 matrix
+Correlations come from J.P. Morgan's published 60×60 matrix
 (`keepp_mc/data/jpm_correlations.csv`) and are not editable — they're the one thing in the
 model nobody has to guess.
 
@@ -52,6 +64,9 @@ python tests/test_universe.py
 python tests/test_run_store.py
 python tests/test_db.py
 python tests/test_blackrock.py
+python tests/test_compare.py
+python tests/test_liquidity.py
+python tests/test_geography.py
 ```
 
 Run these from the repo root after any change to the `keepp_mc` package
@@ -62,15 +77,19 @@ Run these from the repo root after any change to the `keepp_mc` package
 ```
 app.py                     Streamlit UI (entry point: `streamlit run app.py`)
 keepp_mc/                  Core package — pure Python, no Streamlit
-  engine.py                Monte Carlo simulation
+  engine.py                Monte Carlo simulation + return_ladder reconciliation
   optimizer.py             Mean-variance optimization
-  universe.py              Optimization over the full 58-line LTCMA universe
+  universe.py              Optimization over the full 59-line LTCMA universe
   run_store.py             Run records, run fingerprint (digest) and Excel export
   db.py                    Accounts, login sessions, saved runs (SQLite or Postgres)
-  jpm_ltcma.py             The 58 LTCMA lines and correlation loading
+  jpm_ltcma.py             The 59 LTCMA lines and correlation loading
   blackrock_cma.py         BlackRock's assumptions: returns by horizon, scenarios, correlation build
+  compare.py               Keepp-vs-provider two-view comparison (common random numbers)
+  liquidity.py             L1–L5 liquidity tiers, time-to-cash and crisis haircuts
+  geography.py             Geography look-through and region limits
+  personal_lines.py        Personal PE / PC lines with proxy correlations
   data/
-    jpm_correlations.csv   J.P. Morgan's published correlation matrix
+    jpm_correlations.csv   J.P. Morgan's published 60×60 correlation matrix
     blackrock_cma.csv      The USD rows extracted from BlackRock's workbook
 tests/                     One script per module (run with `python tests/test_*.py`)
 scripts/
@@ -166,6 +185,16 @@ That rewrites `keepp_mc/data/blackrock_cma.csv`; commit it. How it differs from 
 - Returns use J.P. Morgan's compound (geometric) figures; the engine derives
   the arithmetic return internally (`g + σ²/2`) rather than double-counting
   variance drag.
+- The simulator's median compound return is always at or above a weighted
+  average of the Return column. `engine.return_ladder` breaks the gap into
+  two non-negative components: **dispersion** (spread of sleeve volatilities,
+  present even at ρ = 1) and **diversification** (what correlations below 1
+  add on top). The reconciliation panel in the app shows each step.
+- The **Keepp vs provider** comparison (`compare.py`) runs the same portfolio
+  twice — once with Keepp's return assumptions, once with the provider's
+  published figures — using identical random shocks ("common random numbers"),
+  so the difference in outcomes is almost entirely from the assumptions, not
+  simulation noise.
 - Correlations are static — there's no regime-switching or crisis
   correlation spike, so tail outcomes are somewhat optimistic.
 - Nominal USD, no fees, no taxes, no external cash flows.
