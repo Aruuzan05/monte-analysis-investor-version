@@ -705,13 +705,37 @@ def seed_standard():
     return ([], {}, {})
 
 
+# Keepp's deck sleeves on BlackRock: the nearest BlackRock line for each
+# J.P. Morgan deck line. Commodities has no BlackRock line, so it uses the
+# J.P. Morgan extra that BlackRock Custom mode already offers.
+BR_SLEEVE_LINE = {
+    "U.S. Inv Grade Corporate Bonds": "US credit (all maturities)",
+    "U.S. Cash": "US cash",
+    "AC World Equity": "All country large cap equities",
+    "Private Equity": "US private equity (buyout)",
+    "Diversified Hedge Funds": "Hedge funds (global)",
+    "Commodities": "Commodities (J.P. Morgan)",
+}
+
+
 def custom_alloc_seed() -> pd.DataFrame:
-    """Custom mode's starting table. On J.P. Morgan it is Keepp's own deck
-    sleeves; BlackRock starts empty (the deck's lines are J.P. Morgan's, and
-    BlackRock has no commodities line to map the 8% sleeve onto)."""
+    """Custom mode's starting table: Keepp's own deck sleeves — weights AND
+    Keepp's return / vol figures — so the Keepp-vs-provider comparison shows
+    straight away. On J.P. Morgan the sleeves sit on the deck's own lines; on
+    BlackRock on the nearest BlackRock line (BR_SLEEVE_LINE). The provider
+    side of the comparison is then that provider's published figure for the
+    line, so the gap is Keepp's view against J.P. Morgan's or BlackRock's."""
     if getattr(SRC, "KEY", JPM_KEY) == BR_KEY:
-        return pd.DataFrame(columns=["Category", "LTCMA line", "Weight %",
-                                     "Return %", "Vol %"])
+        rows = []
+        for k, line, w, r, v, _ in BASE_SLEEVES:
+            br_line = BR_SLEEVE_LINE.get(line)
+            if br_line is None or SRC.lookup(br_line) is None:
+                continue                      # catalogue changed: skip
+            rows.append({"Category": SRC.CATEGORY_NAME[k],
+                         "LTCMA line": SRC.LABEL.get(br_line, br_line),
+                         "Weight %": w, "Return %": r, "Vol %": v})
+        return pd.DataFrame(rows, columns=["Category", "LTCMA line",
+                                           "Weight %", "Return %", "Vol %"])
     return pd.DataFrame(
         [{"Category": SRC.CATEGORY_NAME[k], "LTCMA line": SRC.LABEL[line],
           "Weight %": w, "Return %": r, "Vol %": v}
@@ -1561,9 +1585,9 @@ def custom_builder():
             cmpm.build_frame(lines, new_w, {}, {}, SRC), "keepp", SRC)
         bump_editors()
         st.rerun()
-    if not IS_BR and b2.button("↺ Reset to J.P. Morgan defaults",
-                               key="k_reset",
-                               help="Back to Keepp's deck sleeves."):
+    if b2.button("↺ Reset to Keepp defaults", key="k_reset",
+                 help="Back to Keepp's deck sleeves, with Keepp's own return "
+                      "and volatility figures."):
         st.session_state.custom_alloc = custom_alloc_seed()
         bump_editors()
         st.rerun()
