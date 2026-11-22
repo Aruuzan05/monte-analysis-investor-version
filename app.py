@@ -36,6 +36,8 @@ from keepp_mc import geography as geo
 from keepp_mc import liquidity as liq
 from keepp_mc import run_store as rs
 from keepp_mc import universe as uni
+from keepp_mc import backtest as btm
+from keepp_mc import backtest_data as bd
 from keepp_mc.engine import return_ladder, simulate
 
 # --------------------------------------------------------------------------
@@ -1066,8 +1068,9 @@ st.markdown(
     f'happen over the next {years} year{"s" if years != 1 else ""}.</p>',
     unsafe_allow_html=True)
 
-tab_over, tab_mix, tab_opt, tab_det, tab_cf = st.tabs(
-    ["Overview", "Your mix", "Improve the mix", "Details & saved runs",
+tab_over, tab_bt, tab_mix, tab_opt, tab_det, tab_cf = st.tabs(
+    ["Overview", "Backtest & stress", "Your mix", "Improve the mix",
+     "Details & saved runs",
      "Contributions & withdrawals"],
     key="nav", on_change="rerun")
 
@@ -2427,7 +2430,7 @@ def _saved_runs_body(current_digest):
 
 
 if off:
-    for t in (tab_over, tab_opt, tab_det, tab_cf):
+    for t in (tab_over, tab_bt, tab_opt, tab_det, tab_cf):
         with t:
             if empty:
                 st.info("**Start on the Your mix tab.** Pick the investments "
@@ -2674,6 +2677,312 @@ with tab_over:
         'specific outcome. Real markets can behave worse than a model expects, '
         'especially in a crisis. Figures are before fees, taxes and inflation.</div>',
         unsafe_allow_html=True)
+
+
+# ==========================================================================
+# TAB — Backtest & stress (keepp_mc/backtest.py)
+# How this mix would have done since 1997 and through five crises, on
+# historical proxy returns. Uses the weights only, not the assumptions.
+# ==========================================================================
+BT_CUR = "This mix"
+BT_COLORS = [ACCENT_DK] + [c for c in SERIES if c != ACCENT_DK]
+
+
+@st.cache_data(show_spinner=False)
+def bt_returns() -> pd.DataFrame:
+    return bd.load_returns()
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def bt_run(names: tuple, weights: tuple) -> btm.Backtest:
+    """weights: one tuple of nine proxy weights per scenario, in bd.LINES order."""
+    W = pd.DataFrame(np.array(weights).T, index=btm.LINES, columns=list(names))
+    return btm.run(bt_returns(), W)
+
+
+def bt_saved_mixes():
+    """{label: proxy weights} for saved runs, one entry per distinct mix.
+    A Keepp run and its provider run hold the same weights, so they backtest
+    identically and are listed once."""
+    out, seen = {}, set()
+    try:
+        runs = numbered_runs()
+    except Exception:
+        return out
+    for x in reversed(runs):                       # newest first
+        rec = x.record
+        try:
+            w, _ = btm.map_alloc(pd.DataFrame(rec.sleeves), run_src(rec))
+        except Exception:
+            continue
+        if w is None:
+            continue
+        sig = tuple(np.round(w.to_numpy(), 6))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out[f"#{rec.seq} · {rec.label}"] = w
+    return out
+
+
+def bt_growth_chart(b, amount, colors, height=340):
+    V = (b.V * amount).reset_index(names="Date").melt(
+        "Date", var_name="Scenario", value_name="Value")
+    V["v_l"] = V["Value"].map(money)
+    bands = pd.DataFrame([{"a": pd.Timestamp(a), "b": pd.Timestamp(z), "n": n}
+                          for n, (a, z) in btm.CRISES.items()])
+    dom = list(b.V.columns)
+    shade = alt.Chart(bands).mark_rect(color=INK_3, opacity=.10).encode(
+        x="a:T", x2="b:T", tooltip=alt.Tooltip("n:N", title="Crisis"))
+    lines = alt.Chart(V).mark_line(strokeWidth=2).encode(
+        x=alt.X("Date:T", title=None, axis=alt.Axis(
+            labelColor=INK_3, grid=False, domainColor=GRID, tickColor=GRID,
+            format="%Y", labelFontSize=12)),
+        y=alt.Y("Value:Q", title=None,
+                scale=alt.Scale(type="log", nice=False, domain=[
+                    float(V["Value"].min()) * 0.92, float(V["Value"].max()) * 1.08]),
+                axis=alt.Axis(format="$.2~s", labelColor=INK_3, gridColor=GRID,
+                              domain=False, ticks=False, labelFontSize=12,
+                              values=[x * amount for x in
+                                      (0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32)])),
+        color=alt.Color("Scenario:N", scale=alt.Scale(domain=dom, range=colors),
+                        legend=None if len(dom) == 1 else alt.Legend(
+                            orient="top", title=None, labelFontSize=12)),
+        tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Date:T", format="%b %Y"),
+                 alt.Tooltip("v_l:N", title="Value")])
+    return (shade + lines).properties(height=height).configure_view(strokeWidth=0)
+
+
+def bt_drawdown_chart(b, colors, height=230):
+    D = (b.DD * 100).reset_index(names="Date").melt(
+        "Date", var_name="Scenario", value_name="DD")
+    dom = list(b.DD.columns)
+    area = alt.Chart(D).mark_line(strokeWidth=1.6).encode(
+        x=alt.X("Date:T", title=None, axis=alt.Axis(
+            labelColor=INK_3, grid=False, domainColor=GRID, tickColor=GRID,
+            format="%Y", labelFontSize=12)),
+        y=alt.Y("DD:Q", title=None, axis=alt.Axis(
+            labelColor=INK_3, gridColor=GRID, domain=False, ticks=False,
+            labelExpr="datum.value + '%'", labelFontSize=12)),
+        color=alt.Color("Scenario:N", scale=alt.Scale(domain=dom, range=colors),
+                        legend=None),
+        tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Date:T", format="%b %Y"),
+                 alt.Tooltip("DD:Q", title="Below previous high, %", format=".1f")])
+    if len(dom) == 1:
+        area = area.mark_area(color=BRICK, opacity=.25, line={"color": BRICK})
+    lim = alt.Chart(pd.DataFrame({"y": [btm.DRAWDOWN_LIMIT * 100]})).mark_rule(
+        color=INK, strokeDash=[4, 4], opacity=.7).encode(y="y:Q")
+    return (area + lim).properties(height=height).configure_view(strokeWidth=0)
+
+
+def bt_crisis_chart(cr, colors, height=260):
+    df = cr.copy()
+    df["Return %"] = df["Return"] * 100
+    df["lbl"] = df["Return"].map(lambda v: pct(v, sign=True))
+    dom = list(dict.fromkeys(df["Scenario"]))
+    order = list(btm.CRISES)
+    x_ax = alt.Axis(labelColor=INK_3, gridColor=GRID, domain=False, ticks=False,
+                    labelExpr="datum.value + '%'")
+    enc = dict(
+        y=alt.Y("Crisis:N", sort=order, title=None,
+                axis=alt.Axis(labelColor=INK, labelFontSize=12, labelLimit=260,
+                              labelPadding=10, domain=False, ticks=False)),
+        x=alt.X("Return %:Q", title=None, axis=x_ax),
+        tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Crisis:N"),
+                 alt.Tooltip("Window:N"), alt.Tooltip("lbl:N", title="Return")])
+    if len(dom) == 1:
+        bars = alt.Chart(df).mark_bar(cornerRadius=3, height=22).encode(
+            **enc, color=alt.condition("datum['Return %'] < 0",
+                                       alt.value(BRICK), alt.value(ACCENT)))
+        # room for the value labels beside the bars (~10 pp each side)
+        lo = float(min(df["Return %"].min(), 0)) - 10
+        hi = float(max(df["Return %"].max(), 0)) + 10
+        bars = bars.encode(x=alt.X("Return %:Q", title=None,
+                                   scale=alt.Scale(domain=[lo, hi]), axis=x_ax))
+        neg = alt.Chart(df[df["Return"] < 0]).mark_text(
+            align="right", dx=-5, color=INK_2, fontWeight=600).encode(
+            y=enc["y"], x="Return %:Q", text="lbl:N")
+        pos = alt.Chart(df[df["Return"] >= 0]).mark_text(
+            align="left", dx=5, color=INK_2, fontWeight=600).encode(
+            y=enc["y"], x="Return %:Q", text="lbl:N")
+        return (bars + neg + pos).properties(height=height).configure_view(strokeWidth=0)
+    return alt.Chart(df).mark_bar(cornerRadius=2).encode(
+        **enc, yOffset=alt.YOffset("Scenario:N", sort=dom),
+        color=alt.Color("Scenario:N", scale=alt.Scale(domain=dom, range=colors),
+                        legend=alt.Legend(orient="top", title=None))
+    ).properties(height=max(height, 70 * len(order) * len(dom) / 3)
+                 ).configure_view(strokeWidth=0)
+
+
+def bt_contrib_chart(c: pd.Series, height=260):
+    df = pd.DataFrame({"Line": c.index, "pp": c.to_numpy() * 100})
+    df = df[df["pp"].abs() > 0.005]
+    df["lbl"] = df["pp"].map(lambda v: f"{v:+.1f} pp".replace("-", "−"))
+    bars = alt.Chart(df).mark_bar(cornerRadius=3, height=20).encode(
+        y=alt.Y("Line:N", sort="x", title=None, axis=alt.Axis(
+            labelColor=INK, labelFontSize=12, domain=False, ticks=False)),
+        x=alt.X("pp:Q", title=None, axis=alt.Axis(
+            labelColor=INK_3, gridColor=GRID, domain=False, ticks=False,
+            labelExpr="datum.value + ' pp'")),
+        color=alt.condition("datum.pp < 0", alt.value(DOWN_COLOR), alt.value(UP_COLOR)),
+        tooltip=[alt.Tooltip("Line:N"), alt.Tooltip("lbl:N", title="Contribution")])
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=INK_3).encode(x="x:Q")
+    return (bars + zero).properties(height=max(120, 34 * len(df))
+                                    ).configure_view(strokeWidth=0)
+
+
+def bt_recover(m) -> str:
+    if pd.isna(m):
+        return "not yet"
+    return "no loss" if m == 0 else f"{int(m)} mo"
+
+
+with tab_bt:
+    R_BT = bt_returns()
+    W_CUR, BT_MAP = btm.map_alloc(alloc, SRC)
+    if W_CUR is None:
+        st.info("Add holdings on **Your mix** to see how they would have done.")
+    else:
+        st.markdown(
+            f'<p class="lede">How this mix would have done had it been held from '
+            f'<b>{R_BT.index[0]:%b %Y}</b> to <b>{R_BT.index[-1]:%b %Y}</b>, '
+            f'rebalanced every month, on real market history. Only the weights '
+            f'count here: the return and risk assumptions play no part.</p>',
+            unsafe_allow_html=True)
+
+        saved = bt_saved_mixes()
+        picked = st.multiselect(
+            "Compare with saved scenarios", list(saved), key="bt_compare",
+            max_selections=5, placeholder="Optional — pick up to 5 saved runs",
+            help="A Keepp run and its J.P. Morgan / BlackRock twin hold the "
+                 "same weights, so they backtest identically and are listed once.")
+        names = (BT_CUR, *picked)
+        ws = (tuple(W_CUR.to_numpy()),
+              *(tuple(saved[p].reindex(btm.LINES).to_numpy()) for p in picked))
+        with st.spinner("Replaying history…"):
+            B = bt_run(names, ws)
+        cols = BT_COLORS[:len(names)]
+        m = B.metrics[BT_CUR]
+
+        # ---- headline cards -----------------------------------------------
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(card(
+            f"{money(amount)} would have become", money(amount * m["Growth multiple"]),
+            f'{pct(m["CAGR"], 2)} a year since {R_BT.index[0]:%Y}'),
+            unsafe_allow_html=True)
+        c2.markdown(card(
+            "Volatility", pct(m["Volatility"], 2),
+            f'Sharpe ratio {m["Sharpe"]:.2f} (excess return over cash ÷ volatility)'),
+            unsafe_allow_html=True)
+        rec = (f'recovered {m["Recovered"]:%b %Y} ({int(m["Months to recover"])} '
+               f'months after the low)' if m["Recovered"] is not None
+               else "not yet recovered")
+        c3.markdown(card(
+            "Worst fall from a high", pct(m["Max drawdown"], 1, sign=True),
+            f'{m["Peak"]:%b %Y} → {m["Trough"]:%b %Y}, {rec}', hot=True),
+            unsafe_allow_html=True)
+        c4.markdown(card(
+            "Worst 12 months", pct(m["Worst 12 months"], 1, sign=True),
+            f'Ended {m["Worst 12 months ended"]:%b %Y} · worst month '
+            f'{pct(m["Worst month"], 1, sign=True)} ({m["Worst month date"]:%b %Y})',
+            hot=m["Worst 12 months"] < 0), unsafe_allow_html=True)
+        n_bad = m["Years below limit"]
+        st.markdown(
+            f'<div class="muted" style="margin-top:8px">Keepp limit of '
+            f'{pct(btm.DRAWDOWN_LIMIT, 0)} maximum drawdown in a year: broken in '
+            f'<b>{n_bad}</b> of {R_BT.index.year.nunique()} calendar years'
+            f'{" (" + m["Which years"] + ")" if n_bad else ""}.</div>',
+            unsafe_allow_html=True)
+
+        # ---- growth + drawdown -------------------------------------------
+        section(f"Growth of {money(amount)}",
+                "Log scale, so equal heights mean equal percentage moves. "
+                "Grey bands are the five crisis windows below.")
+        st.altair_chart(bt_growth_chart(B, amount, cols), width="stretch")
+        section("Fall from the previous high",
+                f"Dashed line: Keepp's {pct(btm.DRAWDOWN_LIMIT, 0)} limit.")
+        st.altair_chart(bt_drawdown_chart(B, cols), width="stretch")
+
+        # ---- crises --------------------------------------------------------
+        section("Through five crises",
+                f"Bought at the market peak, held to the low. Dollar figures "
+                f"on {money(amount)}.")
+        cr = B.crises
+        left, right = st.columns([1, 1.15], gap="large")
+        with left:
+            st.altair_chart(bt_crisis_chart(cr, cols), width="stretch")
+        with right:
+            cur = cr[cr["Scenario"] == BT_CUR].set_index("Crisis")
+            st.dataframe(pd.DataFrame({
+                "Return": cur["Return"].map(lambda v: pct(v, 1, sign=True)),
+                "P&L": (cur["Return"] * amount).map(money),
+                "Low": cur["Max drawdown"].map(lambda v: pct(v, 1, sign=True)),
+                "Recovery": cur["Months to recover"].map(bt_recover),
+            }).rename_axis(None), width="stretch", height=213)
+            st.caption("Hover a bar for the exact window. Recovery: months after "
+                       "the window until the mix is back to where it started.")
+
+        pick = st.selectbox("What drove the result in", list(btm.CRISES),
+                            index=2, key="bt_crisis")
+        cw = cr[(cr["Crisis"] == pick) & (cr["Scenario"] == BT_CUR)].iloc[0]
+        st.markdown(
+            f'<div class="muted">{cw["Window"]}: this mix returned '
+            f'<b>{pct(cw["Return"], 1, sign=True)}</b>. Each bar is one '
+            f'line\'s share of that, in percentage points of the starting value; '
+            f'the bars add up to the total.</div>', unsafe_allow_html=True)
+        st.altair_chart(bt_contrib_chart(B.contrib.loc[(pick, BT_CUR)]),
+                        width="stretch")
+
+        # ---- comparison table ---------------------------------------------
+        if picked:
+            section("Side by side")
+            mt = B.metrics
+            piv = cr.pivot(index="Scenario", columns="Crisis", values="Return")
+            tbl = pd.DataFrame({
+                "Return a year": mt.loc["CAGR"], "Volatility": mt.loc["Volatility"],
+                "Sharpe": mt.loc["Sharpe"], "Worst fall": mt.loc["Max drawdown"],
+                "Worst 12 months": mt.loc["Worst 12 months"],
+                "GFC 2007-09": piv["Global financial crisis 2007-09"],
+                "COVID 2020": piv["COVID-19 crash 2020"],
+                "2022": piv["2022 war and rate shock"],
+            }).loc[list(names)].astype(float)
+            pct_cols = [c for c in tbl.columns if c != "Sharpe"]
+            st.dataframe(
+                tbl.style.format("{:.2%}", subset=pct_cols)
+                   .format("{:.2f}", subset=["Sharpe"]),
+                width="stretch")
+
+        # ---- method --------------------------------------------------------
+        with st.expander("How this is calculated, and what each holding is backtested as"):
+            st.markdown(
+                "- **Proxies.** Each holding is replayed on one of nine historical "
+                "index or fund series (table below). Bonds other than high yield use "
+                "an investment-grade corporate index, so Treasuries look worse in "
+                "2008 than they really were. Private equity uses *listed* private "
+                "equity, which falls much further than appraisal-based fund NAVs.\n"
+                "- **Rebalancing.** Back to target weights every month; no costs "
+                "or taxes. Fund proxies are already net of their fees.\n"
+                "- **Missing history.** Before Oct 2014 there is no Bitcoin data, "
+                "so the digital-assets weight is spread pro rata over the other "
+                "holdings in those months.\n"
+                "- **Sharpe** = (average monthly return − T-bill return) ÷ monthly "
+                "standard deviation × √12.\n"
+                "- **Crisis contributions** = Σ value at start of month × weight × "
+                "line return, so they add up exactly to the crisis return.")
+            a, b_ = st.columns([1.2, 1], gap="large")
+            with a:
+                st.markdown("**Your holdings → proxy line**")
+                st.dataframe(BT_MAP, hide_index=True, width="stretch",
+                             column_config={"Weight %": st.column_config.NumberColumn(
+                                 format="%.1f")})
+            with b_:
+                st.markdown("**Proxy weights used**")
+                st.dataframe(pd.DataFrame({"Weight %": W_CUR * 100})
+                             .query("`Weight %` > 0").round(1), width="stretch")
+            st.markdown("**Data**")
+            st.dataframe(bd.coverage(R_BT), width="stretch")
+            st.caption("Monthly USD total returns. Refresh with "
+                       "`python scripts/update_proxy_returns.py`.")
 
 
 # ==========================================================================

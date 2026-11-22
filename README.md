@@ -32,6 +32,14 @@ paths to show a range of likely outcomes over 3, 5, and 10 years.
   simulator's compound return differs from the weighted average of the Return
   column, splitting the gap into a dispersion term (spread of sleeve
   volatilities) and a diversification term (correlations below 1).
+- **Backtest & stress** — a tab next to Overview that replays the current mix
+  on monthly market history since 1997 (rebalanced monthly): growth, drawdowns,
+  volatility, Sharpe, worst 12 months, years breaking Keepp's −12% drawdown
+  limit, and five crises (Asian 1997-98, dot-com, GFC, COVID, 2022) with
+  each line's contribution. Saved runs can be added side by side. Every
+  holding is backtested on one of nine historical proxies (`keepp_mc/backtest.py`);
+  the data is a bundled snapshot, refreshed with
+  `python scripts/update_proxy_returns.py`.
 - **Results** — a percentile table (5th/25th/median/75th/95th) and a wealth
   fan chart for each horizon.
 - **Saved runs** — pressing *Save scenario* at the bottom of Your mix saves
@@ -67,6 +75,7 @@ python tests/test_blackrock.py
 python tests/test_compare.py
 python tests/test_liquidity.py
 python tests/test_geography.py
+python tests/test_backtest.py
 ```
 
 Run these from the repo root after any change to the `keepp_mc` package
