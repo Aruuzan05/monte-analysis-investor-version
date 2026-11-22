@@ -1286,7 +1286,7 @@ def liquidity_panel(alloc_df, key, table=False):
 # The provider is whatever the sidebar selects (SRC): a BlackRock portfolio
 # is built from BlackRock lines and compared against BlackRock.
 # --------------------------------------------------------------------------
-KEEPP_C, JPM_C = ACCENT, DEEP_BLUE
+KEEPP_C, JPM_C, BR_C = ACCENT, DEEP_BLUE, "#7B4F9E"
 # Provider labels for the comparison: short name in tables, title on cards.
 PROV = SRC_SHORT
 PROV_TITLE = (f"BlackRock · {brc.SCENARIOS[st.session_state.br_scenario]}"
@@ -1379,6 +1379,7 @@ def cmp_css():
                       border-bottom:1px solid #EEF2F1; }}
       table.cmpt td.k {{ color:{ACCENT_DK}; font-weight:650; }}
       table.cmpt td.j {{ color:{DEEP_BLUE}; font-weight:650; }}
+      table.cmpt td.b {{ color:{BR_C}; font-weight:650; }}
       .cmphead {{ border-radius:14px; padding:18px 22px; background:#fff;
                  border:1px solid {GRID}; border-top:5px solid var(--c); }}
       .cmphead .t {{ font-size:.8rem; font-weight:650; letter-spacing:.06em;
@@ -2063,80 +2064,89 @@ def provider_side_result(rec):
                    int(rec.years), int(rec.seed))[0]
 
 
-def comparison_rows(picked, stored):
-    """One row per portfolio among `picked`: Keepp and provider metrics.
+def run_base_label(rec):
+    """Strip saved-label suffixes to get the base name for grouping runs."""
+    lbl = rec.label
+    if lbl.endswith(" · Keepp assumptions"):
+        return lbl[: -len(" · Keepp assumptions")]
+    sl = rs.source_label(rec.source)
+    suffix = f" · {sl}"
+    if lbl.endswith(suffix):
+        return lbl[: -len(suffix)]
+    return lbl
 
-    Each run is matched to its other view among ALL saved runs (`stored`),
-    so either half of a saved pair is enough. A Keepp run whose provider view
-    was never saved gets it simulated now. Shared by the on-page table and
-    the Excel Summary sheet, so the two always agree."""
-    keys = {x.id: run_pair_key(x.record) for x in stored}
-    views = {x.id: run_view(x.record) for x in stored}
-    order, rows = [], {}
+
+def comparison_rows(picked, stored):
+    """One row per portfolio group among `picked`.
+
+    Groups runs by (base label, years): same name + same horizon = same
+    portfolio regardless of assumptions. Within each group keepp / jpm / br
+    slots are filled by run_view. Shared by the on-page table and the Excel
+    Summary sheet."""
+    views_cache = {x.id: run_view(x.record) for x in stored}
+
+    # Group every stored run by (base_label, years)
+    groups = {}   # key -> {"keepp": run, "jpm": run, "br": run, "seq": int}
+    for x in stored:
+        v, fam, _ = views_cache[x.id]
+        key = (run_base_label(x.record), int(x.record.years))
+        if key not in groups:
+            groups[key] = {"keepp": None, "jpm": None, "br": None,
+                           "seq": x.record.seq}
+        slot = "keepp" if v == "keepp" else ("br" if fam == BR_KEY else "jpm")
+        if groups[key][slot] is None:
+            groups[key][slot] = x
+
+    # Output order from picked runs, deduplicated by group key
+    order, seen = [], set()
     for x in picked:
-        k = keys[x.id]
-        if k in rows:
-            continue
-        mates = [y for y in stored if keys[y.id] == k]
-        # Prefer a selected run of each view, then the newest.
-        pick_first = sorted(mates, key=lambda y: (y not in picked,))
-        row = {"keepp": None, "provider": None}
-        for y in pick_first:
-            v = views[y.id][0]
-            if row[v] is None:
-                row[v] = y
-        rows[k] = row
-        order.append(k)
+        key = (run_base_label(x.record), int(x.record.years))
+        if key not in seen:
+            seen.add(key)
+            order.append(key)
 
     out = []
-    for k in order:
-        r = rows[k]
-        rec = (r["keepp"] or r["provider"]).record
-        mk = cmpm.run_metrics(r["keepp"].record) if r["keepp"] else None
-        sim = False
-        if r["provider"] is not None:
-            mp = cmpm.run_metrics(r["provider"].record)
-            p_tag = f'#{r["provider"].record.seq}'
-        elif r["keepp"] is not None:
-            try:
-                mp = cmpm.run_metrics(result=provider_side_result(rec))
-                p_tag, sim = "simulated now", True
-            except Exception:
-                mp, p_tag = None, "unavailable"
-        else:
-            mp, p_tag = None, ""
-        out.append({"name": rec.label, "seq": rec.seq,
-                    "provider": rs.source_label(rec.source),
-                    "years": rec.years,
-                    "keepp_run": (f'#{r["keepp"].record.seq}' if r["keepp"]
-                                  else "none saved"),
-                    "provider_run": p_tag, "simulated": sim,
-                    "keepp": mk, "prov": mp})
+    for key in order:
+        g = groups.get(key, {"keepp": None, "jpm": None, "br": None, "seq": 0})
+        base_lbl, years = key
+        mk = cmpm.run_metrics(g["keepp"].record) if g.get("keepp") else None
+        mj = cmpm.run_metrics(g["jpm"].record) if g.get("jpm") else None
+        mb = cmpm.run_metrics(g["br"].record) if g.get("br") else None
+        out.append({
+            "name": base_lbl,
+            "seq": g.get("seq", 0),
+            "years": years,
+            "keepp": mk,
+            "jpm": mj,
+            "br": mb,
+            "keepp_run": (f'#{g["keepp"].record.seq}' if g.get("keepp")
+                          else "none"),
+            "jpm_run": (f'#{g["jpm"].record.seq}' if g.get("jpm")
+                        else "none"),
+            "br_run": (f'#{g["br"].record.seq}' if g.get("br")
+                       else "none"),
+        })
     return out
 
 
 CMP_METRICS = [("Average return / yr", "pct"), ("Typical return / yr", "pct"),
-               ("Typical ×", "money")]
+               ("Volatility", "pct")]
 
 
 def comparison_excel_frame(rows):
-    """The Keepp vs provider table for Excel: two-level headers (metric,
-    Keepp / Provider / Difference). Returns in %, differences in pp, values
-    in USD for the sidebar amount — the same numbers the page shows."""
+    """Keepp / J.P. Morgan / BlackRock comparison table for Excel export.
+    Two-level headers: (metric, view). Returns in %."""
+    VIEWS = [("Keepp", "keepp"), ("J.P. Morgan", "jpm"), ("BlackRock", "br")]
     data = []
     for r in rows:
-        d = {("Scenario", ""): r["name"], ("Provider", ""): r["provider"],
-             ("Years", ""): r["years"], ("Keepp run", ""): r["keepp_run"],
-             ("Provider run", ""): r["provider_run"]}
-        for m, kind in CMP_METRICS:
-            scale = amount if kind == "money" else 100.0
-            g = (f"Typical value of {money(amount)} (USD)" if kind == "money"
-                 else f"{m} (%)")
-            mk, mp = r["keepp"], r["prov"]
-            d[(g, "Keepp")] = mk[m] * scale if mk else None
-            d[(g, "Provider")] = mp[m] * scale if mp else None
-            d[(g, "Difference" + ("" if kind == "money" else " (pp)"))] = (
-                (mk[m] - mp[m]) * scale if mk and mp else None)
+        d = {("Scenario", ""): r["name"], ("Years", ""): r["years"],
+             ("Keepp run", ""): r["keepp_run"], ("JPM run", ""): r["jpm_run"],
+             ("BR run", ""): r["br_run"]}
+        for m, _ in CMP_METRICS:
+            g = f"{m} (%)"
+            for vlabel, vkey in VIEWS:
+                md = r.get(vkey)
+                d[(g, vlabel)] = md[m] * 100.0 if md else None
         data.append(d)
     df = pd.DataFrame(data)
     if len(df):
@@ -2149,61 +2159,63 @@ def views_comparison(picked, stored):
     crow = comparison_rows(picked, stored)
     cmp_css()
     section("Keepp vs provider returns",
-            "For each selected scenario: its Keepp (Custom) figures next to "
-            "the provider's, and the difference. Selecting either half of a "
-            "saved pair is enough.")
-    METRICS = CMP_METRICS
+            "For each selected scenario: return figures on Keepp's assumptions, "
+            "J.P. Morgan's, and BlackRock's, matched by scenario name.")
     head = ('<tr><th rowspan="2">Scenario</th>'
-            + "".join(f'<th colspan="3" style="text-align:center">{m}'
-                      f'{" (value of " + money(amount) + ")" if k == "money" else ""}'
-                      f'</th>' for m, k in METRICS) + '</tr><tr>'
-            + "".join('<th>Keepp</th><th>Provider</th><th>Difference</th>'
-                      for _ in METRICS) + '</tr>')
-    body, chart_rows, notes = [], [], set()
+            '<th colspan="2" style="text-align:center">Keepp</th>'
+            '<th colspan="2" style="text-align:center">J.P. Morgan</th>'
+            '<th colspan="2" style="text-align:center">BlackRock</th>'
+            '<th rowspan="2" style="text-align:center">Volatility<br>'
+            '<small style="font-weight:400">(J.P. Morgan)</small></th>'
+            '</tr><tr>'
+            '<th>Avg / yr</th><th>Compounded</th>'
+            '<th>Avg / yr</th><th>Compounded</th>'
+            '<th>Avg / yr</th><th>Compounded</th>'
+            '</tr>')
+    body, chart_rows = [], []
     for r in crow:
-        mk, mp, name = r["keepp"], r["prov"], r["name"]
-        prov_name, k_tag, p_tag = r["provider"], r["keepp_run"], r["provider_run"]
-        if r["simulated"]:
-            notes.add("sim")
-        cells = []
-        for m, kind in METRICS:
-            def fmt(d):
-                if d is None:
-                    return '<span class="muted">—</span>'
-                return money(d[m] * amount) if kind == "money" else pct(d[m], 2)
-            cells.append(f'<td class="k">{fmt(mk)}</td><td class="j">{fmt(mp)}'
-                         f'</td>')
-            cells.append(f'<td>{cmp_diff(kind, (mk[m] - mp[m]) * (amount if kind == "money" else 1))}</td>'
-                         if mk and mp else '<td class="muted">—</td>')
+        mk, mj, mb = r["keepp"], r["jpm"], r["br"]
+        name = r["name"]
+
+        def _c(d, m, css):
+            v = ('<span class="muted">—</span>' if d is None
+                 else pct(d[m], 2))
+            return f'<td class="{css}">{v}</td>'
+
+        vol = (pct(mj["Volatility"], 2) if mj
+               else '<span class="muted">—</span>')
         body.append(
             f'<tr><td><b>{name}</b><div class="muted" style="font-size:.76rem">'
-            f'{prov_name} · {r["years"]}y · Keepp {k_tag} · provider {p_tag}'
-            f'</div></td>{"".join(cells)}</tr>')
-        if mk and mp:
-            for who, d in (("Keepp", mk), (prov_name, mp)):
+            f'{r["years"]}y · Keepp {r["keepp_run"]} · JPM {r["jpm_run"]}'
+            f' · BR {r["br_run"]}'
+            f'</div></td>'
+            f'{_c(mk, "Average return / yr", "k")}'
+            f'{_c(mk, "Typical return / yr", "k")}'
+            f'{_c(mj, "Average return / yr", "j")}'
+            f'{_c(mj, "Typical return / yr", "j")}'
+            f'{_c(mb, "Average return / yr", "b")}'
+            f'{_c(mb, "Typical return / yr", "b")}'
+            f'<td>{vol}</td></tr>'
+        )
+        for who, d in (("Keepp", mk), ("J.P. Morgan", mj), ("BlackRock", mb)):
+            if d:
                 chart_rows.append({"Scenario": f"{r['seq']}. {name}",
-                                   "Who": "Keepp" if who == "Keepp" else "Provider",
-                                   "Label": who,
+                                   "Who": who,
                                    "r": d["Average return / yr"],
                                    "r_l": pct(d["Average return / yr"], 2)})
     st.markdown('<div style="overflow-x:auto"><table class="cmpt">' + head
                 + "".join(body) + '</table></div>', unsafe_allow_html=True)
-    foot = ("Difference = Keepp minus provider; ▲/▼ show the direction, not "
-            "which is better. Provider = J.P. Morgan 2027 or BlackRock for the "
-            "scenario's own scenario and horizon.")
-    if "sim" in notes:
-        foot += (" <i>simulated now</i>: that portfolio's provider view was "
-                 "never saved, so it is run on the spot with the scenario's "
-                 "own horizon, futures and seed.")
-    st.markdown(f'<div class="foot" style="margin-top:.4rem">{foot}</div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="foot" style="margin-top:.4rem">'
+                'Volatility shown is J.P. Morgan\'s. Compounded = median '
+                'simulated return / yr.</div>', unsafe_allow_html=True)
 
     if chart_rows:
         cdf = pd.DataFrame(chart_rows)
         sort = list(dict.fromkeys(cdf["Scenario"]))
         span = (cdf.groupby("Scenario")["r"].agg(["min", "max"])
                 .reindex(sort).reset_index())
-        cs = alt.Scale(domain=["Keepp", "Provider"], range=[KEEPP_C, JPM_C])
+        cs = alt.Scale(domain=["Keepp", "J.P. Morgan", "BlackRock"],
+                       range=[KEEPP_C, JPM_C, BR_C])
         lo, hi = float(cdf["r"].min()), float(cdf["r"].max())
         pad = max((hi - lo) * 0.15, 0.002)
         xs = alt.Scale(domain=[lo - pad, hi + pad], nice=False)
@@ -2221,11 +2233,9 @@ def views_comparison(picked, stored):
                                        titleFontWeight=400)),
             color=alt.Color("Who:N", scale=cs, legend=alt.Legend(
                 title=None, orient="top", labelColor=INK_2)),
-            tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Label:N",
-                                                              title="View"),
+            tooltip=[alt.Tooltip("Scenario:N"),
+                     alt.Tooltip("Who:N", title="View"),
                      alt.Tooltip("r_l:N", title="Average return / yr")])
-        # Explicit pixel height: with height="content" Streamlit collapsed
-        # the point scale of this layered chart onto one line.
         h_px = max(56 * len(sort), 120)
         st.altair_chart((rule + dots).properties(height=h_px)
                         .configure_view(strokeWidth=0),
@@ -2359,42 +2369,6 @@ def _saved_runs_body(current_digest):
                    "above.")
         return
 
-    with st.container():                   # compare chart: 2+ runs only
-        # Compare: the selected runs, or the most recent eight.
-        chart_runs = picked if len(picked) >= 2 else stored[:8]
-        if len(chart_runs) >= 2:
-            cmp = pd.DataFrame([{
-                "run": f"{x.record.seq}. {x.record.label}",
-                "val": x.record.median_wealth_x * amount,
-                "val_l": money(x.record.median_wealth_x * amount),
-                "loss": f"{x.record.p_loss_pct:.1f}%",
-                "yrs": f"{x.record.years} yrs",
-                "vol": f"±{x.record.analytic_vol_pct:.1f}%"} for x in chart_runs])
-            bars = alt.Chart(cmp).mark_bar(color=ACCENT, cornerRadiusEnd=4,
-                                           height=18).encode(
-                x=alt.X("val:Q", title=None, axis=alt.Axis(
-                    format="$.3~s", labelColor=INK_3, gridColor=GRID,
-                    domain=False, ticks=False)),
-                y=alt.Y("run:N", sort=list(cmp["run"]), title=None,
-                        axis=alt.Axis(labelFontSize=12, labelColor=INK,
-                                      domain=False, ticks=False, labelLimit=260)),
-                tooltip=[alt.Tooltip("run:N", title="Scenario"),
-                         alt.Tooltip("val_l:N", title="Typical value"),
-                         alt.Tooltip("yrs:N", title="Horizon"),
-                         alt.Tooltip("vol:N", title="Yearly swings"),
-                         alt.Tooltip("loss:N", title="Chance of loss")])
-            txt = alt.Chart(cmp).mark_text(align="left", dx=6, fontSize=12,
-                                           fontWeight=600, color=INK_2).encode(
-                x="val:Q", y=alt.Y("run:N", sort=list(cmp["run"])), text="val_l:N")
-            which = ("the selected scenarios" if len(picked) >= 2 else
-                     "the first eight scenarios in the list — select rows to compare "
-                     "others")
-            st.markdown(f'<div class="muted">Typical value of {money(amount)} at '
-                        f'the end of {which}</div>', unsafe_allow_html=True)
-            st.altair_chart((bars + txt).properties(
-                height=max(36 * len(cmp), 90)).configure_view(strokeWidth=0),
-                width='stretch')
-
     hist_df = rs.history_table(saved)
     hist_df.insert(0, "On screen", ["●" if x.digest == current_digest else ""
                                     for x in stored])
@@ -2499,10 +2473,10 @@ if SAVE_CLICKED and CMP_ACTIVE:
             int(seed))[0]
         out = []
         for side, a_df, r_obj, tag in (
-                ("keepp", alloc, res, "Keepp assumptions"),
+                ("keepp", alloc, res, "Keepp"),
                 ("provider", cmpm.to_alloc(CMP_FRAME, "provider", SRC),
                  res_jpm, PROV_TITLE)):
-            lbl = f"{name} · {tag}" if name else f"{tag} · {int(years)}y"
+            lbl = name if name else f"{int(years)}y"
             dg = rs.run_digest("Custom", a_df[rs.ALLOC_COLS].to_dict("records"),
                                paths, years, seed, source=SRC_ID)
             new = DB.save_run(UID, rs.make_record(0, lbl, "Custom", a_df, paths,
@@ -2510,7 +2484,7 @@ if SAVE_CLICKED and CMP_ACTIVE:
                                                   source=SRC_ID), dg)
             runs = numbered_runs()
             cur = next((x for x in reversed(runs) if x.digest == dg), None)
-            t = f"#{cur.record.seq} · {cur.record.label}" if cur else tag
+            t = f"#{cur.record.seq} · {lbl} ({tag})" if cur else tag
             out.append(f"{'Saved' if new else 'Already saved'} {t}")
         st.toast(" · ".join(out) + ".", icon=":material/check:")
     except Exception as e:                # never lose the results over a save
